@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
@@ -168,8 +169,8 @@ func TestSchemaConstraints(t *testing.T) {
 	d := open(t)
 	bad := []string{
 		`INSERT INTO projects VALUES ('a','n','perso','user','t')`,
-		`INSERT INTO projects VALUES ('a','n','work','jonathan','t')`,
-		`INSERT INTO messages(key,session_id,file,ts,role,project,text) VALUES ('k','s','f','t','jonathan','p','x')`,
+		`INSERT INTO projects VALUES ('a','n','work','other','t')`,
+		`INSERT INTO messages(key,session_id,file,ts,role,project,text) VALUES ('k','s','f','t','other','p','x')`,
 		`INSERT INTO episodes(session_id,start_ts,end_ts,projects,created_at,updated_at) VALUES ('s','a','b','p','c','u')`,
 	}
 	for _, q := range bad {
@@ -236,11 +237,11 @@ func TestConcurrentWritersRealProcesses(t *testing.T) {
 	}
 	defer d.Close()
 	var cmds []*exec.Cmd
-	var outs []*lockedBuffer
+	var outs []*bytes.Buffer
 	for i := range writers {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestWriterProcess$")
 		cmd.Env = append(os.Environ(), writerEnv+"="+strconv.Itoa(i), homeEnv+"="+p.Home)
-		out := &lockedBuffer{}
+		out := &bytes.Buffer{}
 		cmd.Stdout, cmd.Stderr = out, out
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)

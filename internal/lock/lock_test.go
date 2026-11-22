@@ -84,6 +84,12 @@ func lockPath(t *testing.T) string { return filepath.Join(t.TempDir(), "x.lock")
 func TestNeverTwoWriters(t *testing.T) {
 	path, trace := lockPath(t), filepath.Join(t.TempDir(), "trace")
 	var cmds []*exec.Cmd
+	t.Cleanup(func() {
+		for _, cmd := range cmds {
+			cmd.Process.Kill()
+			cmd.Wait()
+		}
+	})
 	for range 8 {
 		cmd := spawn(t, path, "100ms", trace)
 		if err := cmd.Start(); err != nil {
@@ -92,8 +98,15 @@ func TestNeverTwoWriters(t *testing.T) {
 		cmds = append(cmds, cmd)
 	}
 	for _, cmd := range cmds {
-		if err := cmd.Wait(); err != nil {
-			t.Fatal(err)
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(60 * time.Second):
+			t.Fatal("child did not exit within 60s")
 		}
 	}
 	data, err := os.ReadFile(trace)
@@ -143,7 +156,9 @@ func TestNonBlockingWhenBusy(t *testing.T) {
 	if err != nil || acquired {
 		t.Fatalf("acquired=%v err=%v", acquired, err)
 	}
-	release()
+	if release != nil {
+		t.Fatal("release must be nil when the lock is not acquired")
+	}
 }
 
 func TestReleasedByCallingRelease(t *testing.T) {

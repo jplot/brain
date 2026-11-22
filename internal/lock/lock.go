@@ -24,7 +24,8 @@ func Writer(path string, blocking bool) (release func(), acquired bool, err erro
 		}
 	}
 	if errors.Is(err, syscall.EWOULDBLOCK) {
-		return func() { f.Close() }, false, nil
+		f.Close()
+		return nil, false, nil
 	}
 	if err != nil {
 		f.Close()
