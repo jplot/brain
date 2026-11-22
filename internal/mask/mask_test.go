@@ -174,6 +174,31 @@ func TestAccentedLettersAreWordCharacters(t *testing.T) {
 	}
 }
 
+func TestUnicodeClassesFollowPython(t *testing.T) {
+	nfdToken := "e\u0301A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0Uv"
+	cases := []struct{ raw, want string }{
+		{nfdToken, "e\u0301" + marker},
+		{"pa\u017f\u017fword=hunter2hunter2", "pa\u017f\u017fword=" + marker},
+		{"PA\u017f\u017fWORD=hunter2hunter2", "PA\u017f\u017fWORD=" + marker},
+		{"\u00b2token=abcdef123456789", "\u00b2token=" + marker},
+		{"\u00bctoken=abcdef123456789", "\u00bctoken=" + marker},
+		{"\u0663token=abcdef123456789", "\u0663token=" + marker},
+		{"\u0301token=abcdef123456789", "\u0301token=" + marker},
+		{"Authorization: Ba\u017fic dXNlcjpwYXNzd29yZDEyMw==", "Authorization: Ba\u017fic " + marker},
+		{"curl\u0301 -u a:b12345678", "curl\u0301 -u a:" + marker},
+		{"\u00b2A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0Uv", "\u00b2A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0Uv"},
+		{"token\u203fx=abcdef123456789", "token\u203fx=abcdef123456789"},
+		{"token=abc\x1cdef123456789xyz", "token=abc\x1cdef123456789xyz"},
+		{"tok\u212aen=abcdef123456789", "tok\u212aen=abcdef123456789"},
+		{"pass\u017f=abcdef123456789", "pass\u017f=abcdef123456789"},
+	}
+	for _, c := range cases {
+		if got := mask.Text(c.raw); got != c.want {
+			t.Errorf("Text(%+q)\n got %+q\nwant %+q", c.raw, got, c.want)
+		}
+	}
+}
+
 func TestPathologicalInputReturnsQuickly(t *testing.T) {
 	inputs := map[string]string{
 		"a=":           rep("a=", 200000),
@@ -202,6 +227,9 @@ func TestPathologicalInputReturnsQuickly(t *testing.T) {
 			if d := time.Since(start); d >= 2*time.Second {
 				t.Fatalf("took %v", d)
 			}
+			if out == marker {
+				t.Errorf("deadline fired: whole input was replaced by the marker")
+			}
 			if again := mask.Text(out); again != out {
 				t.Errorf("not idempotent")
 			}
@@ -225,6 +253,9 @@ func TestDeepNestingDoesNotBlowUp(t *testing.T) {
 				out := mask.Text(rep(motif, n))
 				if d := time.Since(start); d >= 5*time.Second {
 					t.Fatalf("took %v", d)
+				}
+				if out == marker {
+					t.Errorf("deadline fired: whole input was replaced by the marker")
 				}
 				if again := mask.Text(out); again != out {
 					t.Errorf("not idempotent")

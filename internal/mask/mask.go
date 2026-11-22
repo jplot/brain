@@ -18,7 +18,7 @@ const Marker = "[secret masqué]"
 // timeout; whatever is not examined in time becomes Marker (text is lost, never leaked).
 const budget = time.Second
 
-// maxDepth: 997 consecutive "token=a(" (7,976 characters) overflowed the Python stack.
+// maxDepth is the Python reference's bound, kept so both versions mask the same text.
 const maxDepth = 8
 
 var (
@@ -41,8 +41,8 @@ var (
 
 	// Names are bounded to 64 characters on each side and anchored on a name start:
 	// 100 KB of base64url or repeated "a." took over 17 s with a bare quantifier.
-	name = `(?<![\w.-])[\w.-]{0,64}(?:(?:password|passwd|passphrase|secret|token|api[_ -]?key` +
-		`|mot_?de_?passe)(?-i:(?![a-z]))|(?<![A-Za-z])(?:pass|pwd)(?![A-Za-z]))[\w.-]{0,64}`
+	name = `(?<![\w.-])[\w.-]{0,64}(?:(?:` + fold(`password|passwd|passphrase|secret|token|api[_ -]?key`+
+		`|mot_?de_?passe`) + `)(?-i:(?![a-z]))|(?<![A-Za-z\u017f\u212a])(?:` + fold(`pass|pwd`) + `)(?![A-Za-z\u017f\u212a]))[\w.-]{0,64}`
 
 	cookiePair = `(?<![\w.=-])[\w.-]{1,64}=(?:` + marker + `|[^\s;]){1,4096}`
 )
@@ -67,17 +67,32 @@ var (
 	jwtRe       = mustCompile(jwt, 0)
 	prefixedRe  = mustCompile(prefixed, 0)
 	urlPassword = mustCompile(`(?<h>://[^\s:/@]*:)(?!\d{1,5}[/?#])[^\s]+(?=@)`, 0)
-	authHeader  = mustCompile(`(?<h>\bAuthorization["']?[ \t]*[:=][ \t]*["']?(?:Basic|token|Api-?Key)[ \t]+)`+
+	authHeader  = mustCompile(`(?<h>(?<!\w)Authorization["']?[ \t]*[:=][ \t]*["']?(?:`+fold(`Basic|token|Api-?Key`)+`)[ \t]+)`+
 		authVal+`{8,}`, regexp2.IgnoreCase)
 	bearer       = mustCompile(`(?<h>[Bb]earer[ \t]+)`+kebabWord+authVal+`{16,}`, 0)
-	curlPassword = mustCompile(`(?<h>\bcurl\b[^\n]{0,300}?[ \t]-u[ \t]+["']?[^\s:"']+:)`+
+	curlPassword = mustCompile(`(?<h>(?<!\w)curl(?!\w)[^\n]{0,300}?[ \t]-u[ \t]+["']?[^\s:"']+:)`+
 		`(?:`+marker+`|[^\s"'])+`, 0)
 )
 
+// Python's \w is letters, numbers and "_" (.NET adds marks and connectors, drops "²") and
+// its \s includes U+001C-U+001F, so both are spelled out.
+var pythonClasses = strings.NewReplacer(
+	`[^\s`, `[^\s\x1c-\x1f`,
+	`[\w`, `[\p{L}\p{N}_`,
+	`\w`, `[\p{L}\p{N}_]`,
+	`\s`, `[\s\x1c-\x1f]`,
+)
+
 func mustCompile(pattern string, opts regexp2.RegexOptions) *regexp2.Regexp {
-	return regexp2.MustCompile(pattern, opts)
+	return regexp2.MustCompile(pythonClasses.Replace(pattern), opts)
 }
 
+// fold adds the two non-ASCII letters that Python's IGNORECASE equates with "s" and "k".
+func fold(words string) string {
+	return strings.NewReplacer("s", `[s\u017f]`, "S", `[S\u017f]`, "k", `[k\u212a]`, "K", `[K\u212a]`).Replace(words)
+}
+
+// regexp2 fires a timeout up to one check period late (default 100 ms); 5 ms bounds the overrun.
 func init() { regexp2.SetTimeoutCheckPeriod(5 * time.Millisecond) }
 
 type run struct{ deadline time.Time }
@@ -116,8 +131,6 @@ var steps = []step{
 
 func group(m *regexp2.Match, name string) string { return m.GroupByName(name).String() }
 
-// sub replaces every match of re in text with fn's result. Past the deadline, or when
-// re times out, the unexamined rest is replaced by Marker.
 func (r *run) sub(re *regexp2.Regexp, text string, fn func(*regexp2.Match) string) string {
 	runes := []rune(text)
 	var out strings.Builder
@@ -253,12 +266,15 @@ func (r *run) once(text string) string {
 	return r.sub(doubled, text, func(*regexp2.Match) string { return Marker })
 }
 
-// Text masks every secret in s. It is idempotent: a pattern can reveal another once the
-// first is masked ("AKIA…ghp_…"), so passes repeat until the text stops changing.
-func Text(s string) string {
+// Text masks every secret in s. Passes repeat until stable: a pattern can reveal another
+// once the first is masked ("AKIA…ghp_…").
+func Text(s string) string { return textWithin(s, budget) }
+
+// The lock is needed because MatchTimeout lives on the shared compiled expressions.
+func textWithin(s string, limit time.Duration) string {
 	mu.Lock()
 	defer mu.Unlock()
-	r := &run{deadline: time.Now().Add(budget)}
+	r := &run{deadline: time.Now().Add(limit)}
 	for {
 		masked := r.once(s)
 		if masked == s {
