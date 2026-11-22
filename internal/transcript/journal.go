@@ -9,7 +9,6 @@ import (
 	"github.com/jplot/brain/internal/mask"
 )
 
-// ParseJournalLine decodes one line of an external journal (format v1); any invalid line is an error.
 func ParseJournalLine(raw []byte, file string) ([]Item, error) {
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
@@ -22,7 +21,7 @@ func ParseJournalLine(raw []byte, file string) ([]Item, error) {
 	if err != nil {
 		return nil, err
 	}
-	when, ok := NormalizeTS(ts)
+	when, ok := normalizeTS(ts)
 	if !ok {
 		return nil, fmt.Errorf("journal line: invalid ts %q", ts)
 	}
@@ -47,12 +46,16 @@ func ParseJournalLine(raw []byte, file string) ([]Item, error) {
 }
 
 func requiredFields(m map[string]any) (id, session, ts, role, text string, err error) {
-	for key, dst := range map[string]*string{"id": &id, "session": &session, "ts": &ts, "role": &role, "text": &text} {
-		value, ok := m[key].(string)
+	fields := []struct {
+		key string
+		dst *string
+	}{{"id", &id}, {"session", &session}, {"ts", &ts}, {"role", &role}, {"text", &text}}
+	for _, f := range fields {
+		value, ok := m[f.key].(string)
 		if !ok || strings.TrimSpace(value) == "" {
-			return "", "", "", "", "", fmt.Errorf("journal line: %s is required", key)
+			return "", "", "", "", "", fmt.Errorf("journal line: %s is required", f.key)
 		}
-		*dst = value
+		*f.dst = value
 	}
 	text = strings.TrimSpace(text)
 	return

@@ -53,8 +53,7 @@ var (
 
 var interruptions = []string{"[Request interrupted by user]", "[Request interrupted by user for tool use]"}
 
-// ParseClaudeLine decodes one transcript line; only malformed JSON is an error, any other
-// shape the reader does not know is skipped.
+// Transcripts carry many line types this reader ignores, so an unknown shape is skipped, not an error.
 func ParseClaudeLine(raw []byte, isAgentUse func(string) bool) ([]Item, error) {
 	var obj any
 	if err := json.Unmarshal(raw, &obj); err != nil {
@@ -121,7 +120,7 @@ func newLine(m map[string]any) (line, bool) {
 	l.session, _ = str(m, "sessionId")
 	ts, _ := str(m, "timestamp")
 	var ok bool
-	l.ts, ok = NormalizeTS(ts)
+	l.ts, ok = normalizeTS(ts)
 	if cwd, isStr := str(m, "cwd"); isStr {
 		l.cwd = &cwd
 	}
@@ -141,8 +140,7 @@ func (l line) report(text string) Entry {
 	return l.entry(RoleSubagent, text, fmt.Sprintf("report:%s:%s", l.session, hex.EncodeToString(sum[:])))
 }
 
-// NormalizeTS renders an ISO 8601 timestamp with an offset as millisecond UTC ("...Z").
-func NormalizeTS(value string) (string, bool) {
+func normalizeTS(value string) (string, bool) {
 	moment, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
 		return "", false
@@ -226,7 +224,7 @@ func withoutLeadingBlanks(lines []string) []string {
 	return nil
 }
 
-// dedent mirrors Python's textwrap.dedent: blank lines become empty, the common indent goes.
+// Hand-back reports arrive indented; dedenting keeps their key equal to the notification path's.
 func dedent(lines []string) string {
 	margin, set := "", false
 	for _, l := range lines {
