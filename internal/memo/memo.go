@@ -108,6 +108,15 @@ func sessionLine(s search.SessionRow, withSubjects bool) string {
 }
 
 func Start(q db.Querier, cwd, sessionID string, now time.Time) (string, error) {
+	return start(q, cwd, sessionID, now, true)
+}
+
+// Preview is the start memo for a reader, not for Claude: showing it is not a use of its points.
+func Preview(q db.Querier, cwd string, now time.Time) (string, error) {
+	return start(q, cwd, "", now, false)
+}
+
+func start(q db.Querier, cwd, sessionID string, now time.Time, mark bool) (string, error) {
 	var body []string
 	uid, err := repoSubject(q, cwd)
 	if err != nil {
@@ -118,8 +127,10 @@ func Start(q db.Querier, cwd, sessionID string, now time.Time) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if err := memory.MarkUsed(q, used, now); err != nil {
-			return "", err
+		if mark {
+			if err := memory.MarkUsed(q, used, now); err != nil {
+				return "", err
+			}
 		}
 		if sessionID != "" {
 			if _, err := q.ExecContext(background, "INSERT OR IGNORE INTO injected(session_id, subject_uid) VALUES (?, ?)", sessionID, uid); err != nil {
@@ -238,13 +249,13 @@ func index(q db.Querier, uid string, terms []string, now time.Time) (string, []s
 }
 
 // lastSessions reads episodes, not messages: grouping 100 000 messages by session cost 80 ms of a 100 ms budget.
-// An empty uid means every subject.
+// An empty uid means every subject. A stale episode's title is left out: it may name a forgotten point.
 func lastSessions(q db.Querier, uid string, limit int) ([]search.SessionRow, error) {
 	where, args := "", []any{}
 	if uid != "" {
 		where, args = " WHERE e.session_id IN (SELECT e2.session_id FROM episodes e2 JOIN episode_subjects es ON es.episode_uid = e2.uid WHERE es.subject_uid = ?)", []any{uid}
 	}
-	rows, err := q.QueryContext(background, "SELECT e.session_id, COALESCE(NULLIF(s.title, ''), MAX(e.title)), MAX(e.end_ts)"+
+	rows, err := q.QueryContext(background, "SELECT e.session_id, COALESCE(NULLIF(s.title, ''), MAX(CASE WHEN e.summary_stale = 0 THEN e.title END)), MAX(e.end_ts)"+
 		" FROM episodes e LEFT JOIN sessions s ON s.id = e.session_id"+where+
 		" GROUP BY e.session_id ORDER BY MAX(e.end_ts) DESC, e.session_id LIMIT ?", append(args, limit)...)
 	if err != nil {

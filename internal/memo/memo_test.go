@@ -479,3 +479,39 @@ func TestStartOutsideRepoFastWith100000Messages(t *testing.T) {
 		t.Fatalf("%v\n%s", elapsed, got)
 	}
 }
+
+func TestStaleEpisodeTitleNeverShown(t *testing.T) {
+	f := newFixture(t)
+	a := f.subject("Alpha")
+	f.session("s1", "", "2026-11-20T10:00:00.000Z", a)
+	f.exec("INSERT INTO episodes(uid, session_id, start_ts, end_ts, title, summary, created_at, updated_at, summary_stale)"+
+		" VALUES ('stale', 's1', ?1, ?1, 'TITRE-PERIME', 'r', ?1, ?1, 1)", "2026-11-20T11:00:00.000Z")
+	f.exec("INSERT INTO episode_subjects VALUES ('stale', ?)", a)
+	index, err := Index(f.db, a, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, got := range []string{index, mustStart(t, f, "/nowhere")} {
+		if strings.Contains(got, "PERIME") || !strings.Contains(got, "2026-11-20") {
+			t.Fatalf("got\n%s", got)
+		}
+	}
+}
+
+func TestPreviewMarksNothingUsed(t *testing.T) {
+	f := newFixture(t)
+	repo, _ := subjects.EnsureRepo(f.db, "example/widget", "widget")
+	f.point(repo, "decision", "Use sqlite for storage", 4, false)
+	f.exec("INSERT INTO repo_cache VALUES ('/work/widget', ?, 't')", repo)
+	got, err := Preview(f.db, "/work/widget", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marked int
+	if err := f.db.QueryRow("SELECT (SELECT count(*) FROM point_usage) + (SELECT count(*) FROM injected)").Scan(&marked); err != nil || marked != 0 {
+		t.Fatalf("%d lignes écrites (%v)", marked, err)
+	}
+	if want := mustStart(t, f, "/work/widget"); got != want || !strings.Contains(got, "Use sqlite") {
+		t.Fatalf("got\n%s\nwant\n%s", got, want)
+	}
+}
