@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jplot/brain/internal/db"
+	"github.com/jplot/brain/internal/index"
 	"github.com/jplot/brain/internal/paths"
 	"github.com/jplot/brain/internal/repo"
 	"github.com/jplot/brain/internal/search"
@@ -360,12 +361,69 @@ func TestMigrateRefusesTwice(t *testing.T) {
 	}
 }
 
+func TestMigrateRemovesLeftoverStaging(t *testing.T) {
+	for _, done := range []bool{false, true} {
+		f := newFixture(t)
+		f.build(f.sample()...).Close()
+		leftover := filepath.Join(f.p.Home, "migrate-123")
+		os.MkdirAll(leftover, 0o700)
+		os.WriteFile(filepath.Join(leftover, "brain.db"), []byte("ancienne mémoire"), 0o600)
+		if done {
+			os.WriteFile(f.p.DB(), nil, 0o600)
+			if err := Run(f.old, f.root, f.p, io.Discard); !errors.Is(err, ErrAlreadyDone) {
+				t.Fatalf("got %v", err)
+			}
+		} else {
+			f.migrate()
+		}
+		if _, err := os.Stat(leftover); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("done=%v: leftover kept: %v", done, err)
+		}
+	}
+}
+
+func TestMigrateDoneEvenIfIndexFails(t *testing.T) {
+	f := newFixture(t)
+	f.build(f.sample()...).Close()
+	saved := rebuild
+	t.Cleanup(func() { rebuild = saved })
+	var during []string
+	rebuild = func(p paths.Paths) (index.Stats, error) {
+		during = tree(t, p.Home)
+		return index.Stats{}, errors.New("disque plein")
+	}
+	out := f.migrate()
+	equal(t, during, []string{"paul.db"})
+	if !strings.Contains(out, "Points : 4") || !strings.Contains(out, "Index non reconstruit : il le sera au prochain lancement de paul") {
+		t.Fatal(out)
+	}
+	conn := f.open()
+	if err := index.Refresh(conn, f.p); err != nil {
+		t.Fatal(err)
+	}
+	equal(t, column(t, conn, "SELECT count(*) FROM points"), []string{"4"})
+}
+
+func TestMigrateRelativeRoot(t *testing.T) {
+	f := newFixture(t)
+	f.build(f.sample()...).Close()
+	t.Chdir(f.dir)
+	var out bytes.Buffer
+	if err := Run(f.old, "Projects", f.p, &out); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "Racine") {
+		t.Fatal(out.String())
+	}
+	equal(t, column(t, f.open(), "SELECT count(*) FROM points WHERE subject_uid IS NULL"), []string{"1"})
+}
+
 func TestMigrateLosesToConcurrentDatabase(t *testing.T) {
 	f := newFixture(t)
 	f.build(f.sample()...).Close()
 	f.writeVocal(`{"t":1700000000,"type":"toi","texte":"bonjour"}` + "\n")
 	staged := paths.Paths{Home: t.TempDir()}
-	vocal, err := convertVocal(filepath.Join(filepath.Dir(f.old), "vocal", "conversation.jsonl"), staged.Journals())
+	vocal, _, err := convertVocal(filepath.Join(filepath.Dir(f.old), "vocal", "conversation.jsonl"), staged.Journals(), nil)
 	if err != nil || vocal != 1 {
 		t.Fatalf("%d %v", vocal, err)
 	}
@@ -415,7 +473,6 @@ func TestMigrateExplainsGitUnusable(t *testing.T) {
 	equal(t, tree(t, f.p.Home), nil)
 }
 
-// Messages of a transcript Claude Code has deleted since (after 30 days by default).
 func (f *fixture) archived() []string {
 	gone := filepath.Join(f.p.Transcripts, "x", "s-archive.jsonl")
 	kept := filepath.Join(f.p.Transcripts, "x", "s-un.jsonl")
@@ -530,12 +587,14 @@ func TestVocalConvertedKeepsSessionIDs(t *testing.T) {
 		`{"t":1700000000.9999996,"type":"agent","resultat":"le rapport"}`+"\n",
 	)
 	out := f.migrate()
-	if !strings.Contains(out, "Lignes vocales converties : 3") {
+	if !strings.Contains(out, "Lignes vocales converties : 2\n") || !strings.Contains(out, "Lignes vocales écartées (sessions oubliées) : 1\n") {
 		t.Fatal(out)
+	}
+	if b, _ := os.ReadFile(filepath.Join(f.p.Journals(), "vocal.jsonl")); bytes.Contains(b, []byte("bonjour")) {
+		t.Fatal("forgotten vocal session copied")
 	}
 	got := readJournal(t, filepath.Join(f.p.Journals(), "vocal.jsonl"))
 	want := []line{
-		{1, "1763937000.5:toi", "vocal-perso", "2025-11-23T22:30:00.500Z", "user", "bonjour", "Conversation vocale", nil},
 		{1, "1763937001:reponse", "vocal-2025-11-24", "2025-11-23T22:30:01.000Z", "claude", "salut", "Conversation vocale", nil},
 		{1, "1700000000.9999996:agent", "vocal-2023-11-15", "2023-11-14T22:13:21.000Z", "subagent", "le rapport", "Conversation vocale", nil},
 	}
@@ -571,13 +630,19 @@ func TestVocalSkipsCancelledAndDelegated(t *testing.T) {
 		`pas du json`,
 		``,
 		`{"t":7,"type":"toi","texte":"gardée"}`,
+		`{"t":9,"type":"toi","texte":"suivie d'autre chose"} reste`,
+		`{"t":10,"type":"toi","texte":"deux objets"}{"t":11}`,
+		`{"t":12,"type":"toi","texte":"accolade de trop"}}`,
+		`{"t":1e20,"type":"toi","texte":"après l'an 9999"}`,
+		`{"t":253402300800,"type":"toi","texte":"juste après l'an 9999"}`,
+		`{"t":-62135596801,"type":"toi","texte":"avant l'an 1"}`,
 		`{"t":8,"type":"toi","texte":"ligne incomplète"}`,
 	}, "\n")
 	if err := os.WriteFile(from, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	n, err := convertVocal(from, filepath.Join(dir, "journals"))
-	if err != nil || n != 1 {
+	n, dropped, err := convertVocal(from, filepath.Join(dir, "journals"), map[string]bool{"autre": true})
+	if err != nil || n != 1 || dropped != 0 {
 		t.Fatalf("%d %v", n, err)
 	}
 	got := readJournal(t, filepath.Join(dir, "journals", "vocal.jsonl"))
@@ -588,7 +653,7 @@ func TestVocalSkipsCancelledAndDelegated(t *testing.T) {
 
 func TestVocalAbsentConvertsNothing(t *testing.T) {
 	dir := t.TempDir()
-	n, err := convertVocal(filepath.Join(dir, "absent.jsonl"), filepath.Join(dir, "journals"))
+	n, _, err := convertVocal(filepath.Join(dir, "absent.jsonl"), filepath.Join(dir, "journals"), nil)
 	if err != nil || n != 0 {
 		t.Fatalf("%d %v", n, err)
 	}

@@ -517,8 +517,15 @@ func withoutSession(path, sessionID string) (bool, error) {
 	}
 	defer os.Remove(tmp.Name())
 	_, err = tmp.Write(kept.Bytes())
-	if err := errors.Join(err, tmp.Close()); err != nil {
+	if err := errors.Join(err, tmp.Sync(), tmp.Close()); err != nil {
 		return false, err
 	}
-	return true, os.Rename(tmp.Name(), path)
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return false, err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return false, err
+	}
+	return true, errors.Join(dir.Sync(), dir.Close())
 }

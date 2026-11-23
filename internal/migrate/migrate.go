@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -22,6 +23,8 @@ import (
 	"github.com/jplot/brain/internal/subjects"
 )
 
+var rebuild = index.Rebuild
+
 var ErrAlreadyDone = errors.New("paul.db existe déjà : la reprise a déjà eu lieu")
 
 var (
@@ -32,18 +35,31 @@ var (
 type counts struct {
 	sessions, episodes, points, subjects, archived int
 	rootSeen                                       bool
+	forgotten                                      map[string]bool
 }
 
-// Run builds the new base in a staging folder and links it in place at the end,
-// so a failed import leaves no paul.db behind and can be run again.
+// The new base is built in a staging folder and linked in place once complete: an import that
+// fails before leaves no paul.db and can run again; after, only the index may be missing.
 func Run(old, root string, p paths.Paths, out io.Writer) error {
+	// The staging folder holds a plain copy of the old memory, and Ctrl-C skips the deferred removal.
+	leftovers, err := filepath.Glob(filepath.Join(p.Home, "migrate-*"))
+	if err != nil {
+		return err
+	}
+	for _, dir := range leftovers {
+		if err := os.RemoveAll(dir); err != nil {
+			return err
+		}
+	}
 	if _, err := os.Stat(p.DB()); err == nil {
 		return ErrAlreadyDone
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	old, err := filepath.Abs(old)
-	if err != nil {
+	if old, err = filepath.Abs(old); err != nil {
+		return err
+	}
+	if root, err = filepath.Abs(root); err != nil {
 		return err
 	}
 	if err := p.EnsureHome(); err != nil {
@@ -60,10 +76,6 @@ func Run(old, root string, p paths.Paths, out io.Writer) error {
 		return err
 	}
 	vocalPath := filepath.Join(filepath.Dir(old), "vocal", "conversation.jsonl")
-	vocal, err := convertVocal(vocalPath, staged.Journals())
-	if err != nil {
-		return err
-	}
 	transcripts, err := filepath.Glob(filepath.Join(p.Transcripts, "*", "*.jsonl"))
 	if err != nil {
 		return err
@@ -77,8 +89,15 @@ func Run(old, root string, p paths.Paths, out io.Writer) error {
 		kept[real.path(vocalPath)] = true
 	}
 	read := func(file string) bool { return kept[real.path(file)] }
-	c, err := importBase(copied, filepath.Clean(root), staged, read)
+	c, err := importBase(copied, root, staged, read)
 	if err != nil {
+		return err
+	}
+	vocal, dropped, err := convertVocal(vocalPath, staged.Journals(), c.forgotten)
+	if err != nil {
+		return err
+	}
+	if err := syncFile(staged.DB()); err != nil {
 		return err
 	}
 	var journals []string
@@ -91,9 +110,8 @@ func Run(old, root string, p paths.Paths, out io.Writer) error {
 	if err := commit(staged, p, journals); err != nil {
 		return err
 	}
-	stats, err := index.Rebuild(p)
-	if err != nil {
-		return err
+	if err := os.RemoveAll(stage); err != nil {
+		return fmt.Errorf("reprise faite, mais la copie de l'ancienne base reste dans %s : %w", stage, err)
 	}
 	fmt.Fprintf(out, "Reprise terminée depuis %s.\n", old)
 	if !c.rootSeen {
@@ -101,8 +119,27 @@ func Run(old, root string, p paths.Paths, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "Sessions résumées : %d\nÉpisodes : %d\nPoints : %d\nSujets créés : %d\nLignes vocales converties : %d\nMessages archivés : %d\n",
 		c.sessions, c.episodes, c.points, c.subjects, vocal, c.archived)
+	if dropped > 0 {
+		fmt.Fprintf(out, "Lignes vocales écartées (sessions oubliées) : %d\n", dropped)
+	}
+	// The import is committed and paul.db exists, so a retry would be refused: exit 0 and let
+	// the next refresh index everything, its files table being empty.
+	stats, err := rebuild(p)
+	if err != nil {
+		log.Printf("reconstruction de l'index après la reprise échouée : %v", err)
+		fmt.Fprintln(out, "Index non reconstruit : il le sera au prochain lancement de paul (détail dans paul.log).")
+		return nil
+	}
 	fmt.Fprintf(out, "Index reconstruit : %d fichiers, %d messages\n", stats.Files, stats.Messages)
 	return nil
+}
+
+func syncFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return errors.Join(f.Sync(), f.Close())
 }
 
 // A hard link never replaces a file: if a hook created paul.db meanwhile, the import loses.
@@ -223,6 +260,9 @@ func importBase(old, root string, staged paths.Paths, read func(file string) boo
 	if err := to.QueryRow("SELECT count(*), (SELECT count(DISTINCT session_id) FROM episodes) FROM subjects").Scan(&c.subjects, &c.sessions); err != nil {
 		return c, err
 	}
+	if c.forgotten, err = forgottenSessions(to); err != nil {
+		return c, err
+	}
 	if err := to.Commit(); err != nil {
 		return c, err
 	}
@@ -235,6 +275,23 @@ func importBase(old, root string, staged paths.Paths, read func(file string) boo
 		return c, errors.New("checkpoint de la nouvelle base bloqué")
 	}
 	return c, nil
+}
+
+func forgottenSessions(q *sql.Tx) (map[string]bool, error) {
+	rows, err := q.Query("SELECT session_id FROM forgotten_sessions")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	set := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		set[id] = true
+	}
+	return set, rows.Err()
 }
 
 type mapper struct {

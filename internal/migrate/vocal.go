@@ -18,6 +18,9 @@ import (
 
 const vocalTitle = "Conversation vocale"
 
+// Python's datetime spans years 1 to 9999 and skipped the line beyond.
+const minUnix, maxUnix = -62135596800, 253402300799
+
 type journalLine struct {
 	V       int    `json:"v"`
 	ID      string `json:"id"`
@@ -59,17 +62,17 @@ func (j *journal) close() error {
 	if j.f == nil {
 		return nil
 	}
-	return errors.Join(j.w.Flush(), j.f.Close())
+	return errors.Join(j.w.Flush(), j.f.Sync(), j.f.Close())
 }
 
 // The session ids are the old version's: its episodes and forgotten sessions name them.
-func convertVocal(from, dir string) (int, error) {
+func convertVocal(from, dir string, forgotten map[string]bool) (converted, dropped int, err error) {
 	in, err := os.Open(from)
 	if errors.Is(err, fs.ErrNotExist) {
-		return 0, nil
+		return 0, 0, nil
 	}
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer in.Close()
 	j := &journal{path: filepath.Join(dir, "vocal.jsonl")}
@@ -78,26 +81,31 @@ func convertVocal(from, dir string) (int, error) {
 	for {
 		raw, err := lines.ReadBytes('\n')
 		if err != nil && !errors.Is(err, io.EOF) {
-			return 0, err
+			return 0, 0, err
 		}
 		// A last line without its newline is still being written: the old version skipped it too.
 		if len(raw) == 0 || raw[len(raw)-1] != '\n' {
 			break
 		}
-		if l, ok := vocalLine(raw); ok {
+		l, ok := vocalLine(raw)
+		switch {
+		case !ok:
+		case forgotten[l.Session]:
+			dropped++
+		default:
 			if err := j.write(l); err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 		}
 	}
-	return j.n, j.close()
+	return j.n, dropped, j.close()
 }
 
 func vocalLine(raw []byte) (journalLine, bool) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var obj map[string]any
-	if dec.Decode(&obj) != nil {
+	if dec.Decode(&obj) != nil || dec.Decode(new(any)) != io.EOF {
 		return journalLine{}, false
 	}
 	number, ok := obj["t"].(json.Number)
@@ -105,7 +113,7 @@ func vocalLine(raw []byte) (journalLine, bool) {
 		return journalLine{}, false
 	}
 	t, err := number.Float64()
-	if err != nil || math.IsInf(t, 0) || math.IsNaN(t) {
+	if err != nil || !(t >= minUnix && t <= maxUnix) {
 		return journalLine{}, false
 	}
 	kind, _ := obj["type"].(string)
