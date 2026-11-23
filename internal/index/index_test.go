@@ -989,11 +989,23 @@ func TestFailingGitNeverRereadsTheTranscript(t *testing.T) {
 	}
 }
 
-func TestPathFailingThreeTimesIsDropped(t *testing.T) {
+func slowGit(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nexec /bin/sleep 10\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	budget := gitBudget
+	gitBudget = 50 * time.Millisecond
+	t.Cleanup(func() { gitBudget = budget })
+}
+
+func TestPathTimingOutThreeTimesIsDropped(t *testing.T) {
 	f := newFixture(t)
 	a := gitRepo(t, filepath.Join(t.TempDir(), "a"), "git@example.org:o/alpha.git")
 	f.transcript("-p", "s1", withCwd(user("un"), a))
-	t.Setenv("PATH", t.TempDir())
+	slowGit(t)
 	for want := 1; want <= 2; want++ {
 		f.all()
 		if got := f.count("SELECT attempts FROM pending_paths"); got != want {
@@ -1002,7 +1014,35 @@ func TestPathFailingThreeTimesIsDropped(t *testing.T) {
 	}
 	f.all()
 	if f.count("SELECT count(*) FROM pending_paths") != 0 || f.count("SELECT count(*) FROM session_repos") != 0 {
-		t.Fatal("path kept after three failures")
+		t.Fatal("path kept after three timeouts")
+	}
+}
+
+func TestAbsentGitNeverUsesUpAttempts(t *testing.T) {
+	f := newFixture(t)
+	a := gitRepo(t, filepath.Join(t.TempDir(), "a"), "git@example.org:o/alpha.git")
+	f.transcript("-p", "s1", withCwd(user("un"), a))
+	t.Setenv("PATH", t.TempDir())
+	for range 3 {
+		f.all()
+	}
+	if f.count("SELECT count(*) FROM pending_paths WHERE attempts = 0") != 1 {
+		t.Fatal("hint lost or counted while git was absent")
+	}
+}
+
+func TestForgottenSessionGetsNoRepoBack(t *testing.T) {
+	f := newFixture(t)
+	a := gitRepo(t, filepath.Join(t.TempDir(), "a"), "git@example.org:o/alpha.git")
+	f.transcript("-p", "s1", withCwd(user("un"), a))
+	original := os.Getenv("PATH")
+	t.Setenv("PATH", t.TempDir())
+	f.all()
+	f.exec("INSERT INTO forgotten_sessions(session_id, at) VALUES ('s', '2026-01-01T00:00:00.000Z')")
+	t.Setenv("PATH", original)
+	f.all()
+	if f.count("SELECT count(*) FROM session_repos") != 0 || f.count("SELECT count(*) FROM pending_paths") != 0 {
+		t.Fatal("forgotten session got a repo link back")
 	}
 }
 

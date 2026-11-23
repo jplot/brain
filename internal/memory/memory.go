@@ -293,7 +293,8 @@ func ForgetSession(q db.Querier, sessionID string) error {
 			return err
 		}
 		for _, table := range [][2]string{{"messages", "session_id"}, {"sessions", "id"},
-			{"episodes", "session_id"}, {"summary_failures", "session_id"}} {
+			{"episodes", "session_id"}, {"summary_failures", "session_id"},
+			{"pending_paths", "session_id"}, {"session_repos", "session_id"}, {"injected", "session_id"}} {
 			if _, err := c.ExecContext(background, "DELETE FROM "+table[0]+" WHERE "+table[1]+" = ?", sessionID); err != nil {
 				return err
 			}

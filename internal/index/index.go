@@ -24,9 +24,10 @@ import (
 	"github.com/jplot/brain/internal/transcript"
 )
 
+var gitBudget = 5 * time.Second
+
 const (
 	busyTimeout = 30 * time.Second
-	gitBudget   = 5 * time.Second
 	maxAttempts = 3
 )
 
@@ -278,12 +279,12 @@ func (r *reader) discover() error {
 			if !ok {
 				continue
 			}
-			uid, resolved, failed, err := r.ps.lookup(gitCtx, r.tx, dir, memo)
+			uid, resolved, timedOut, err := r.ps.lookup(gitCtx, r.tx, dir, memo)
 			if err != nil {
 				return err
 			}
 			if !resolved {
-				if err := deferPath(r.tx, session, dir, failed); err != nil {
+				if err := deferPath(r.tx, session, dir, timedOut); err != nil {
 					return err
 				}
 				continue
@@ -300,9 +301,10 @@ func (r *reader) discover() error {
 // failure no other git call is made, so a missing git costs one failed exec per pass.
 type pass struct{ gitDown bool }
 
-// resolved is false when git could not answer; failed tells that this very call hit the
-// failure, as opposed to being skipped because an earlier one did. An error is never git's.
-func (ps *pass) lookup(c context.Context, q db.Querier, dir string, memo map[string]string) (uid string, resolved, failed bool, err error) {
+// resolved is false when git could not answer; timedOut tells that this very call hit the
+// deadline, the only failure that counts as an attempt: with git absent a healthy hint would
+// be dropped every 3 passes. An error is never git's.
+func (ps *pass) lookup(c context.Context, q db.Querier, dir string, memo map[string]string) (uid string, resolved, timedOut bool, err error) {
 	if uid, ok := memo[dir]; ok {
 		return uid, true, false, nil
 	}
@@ -313,7 +315,7 @@ func (ps *pass) lookup(c context.Context, q db.Querier, dir string, memo map[str
 	if errors.Is(err, repo.ErrGit) {
 		ps.gitDown = true
 		log.Printf("découverte des dépôts reportée : %s", gitReason(err))
-		return "", false, true, nil
+		return "", false, errors.Is(err, context.DeadlineExceeded), nil
 	}
 	if err != nil {
 		return "", false, false, err
@@ -340,9 +342,9 @@ func link(q db.Querier, session, uid string) error {
 	return err
 }
 
-func deferPath(q db.Querier, session, dir string, failed bool) error {
+func deferPath(q db.Querier, session, dir string, counted bool) error {
 	attempts := 0
-	if failed {
+	if counted {
 		attempts = 1
 	}
 	now := db.Stamp(time.Time{})
@@ -358,6 +360,9 @@ func deferPath(q db.Querier, session, dir string, failed bool) error {
 type pendingPath struct{ session, path string }
 
 func (ps *pass) retryPending(conn *sql.DB) error {
+	if _, err := conn.ExecContext(ctx, "DELETE FROM pending_paths WHERE session_id IN (SELECT session_id FROM forgotten_sessions)"); err != nil {
+		return err
+	}
 	rows, err := conn.QueryContext(ctx, "SELECT session_id, path FROM pending_paths")
 	if err != nil {
 		return err
@@ -386,12 +391,12 @@ func (ps *pass) retryPending(conn *sql.DB) error {
 			}
 			continue
 		}
-		uid, resolved, failed, err := ps.lookup(gitCtx, conn, dir, memo)
+		uid, resolved, timedOut, err := ps.lookup(gitCtx, conn, dir, memo)
 		if err != nil {
 			return err
 		}
 		if !resolved {
-			if failed {
+			if timedOut {
 				if err := deferPath(conn, p.session, p.path, true); err != nil {
 					return err
 				}

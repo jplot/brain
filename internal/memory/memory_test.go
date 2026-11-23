@@ -545,3 +545,18 @@ func TestForgetDoesNotBlockOnBusyCheckpoint(t *testing.T) {
 		t.Fatalf("forget waited %v on the busy checkpoint", time.Since(start))
 	}
 }
+
+func TestForgetSessionPurgesRepoHints(t *testing.T) {
+	f := newFixture(t)
+	f.exec("INSERT INTO pending_paths VALUES ('s', '/d', 0, 't'), ('o', '/d', 0, 't')")
+	f.exec("INSERT INTO session_repos VALUES ('s', 'u1'), ('o', 'u1')")
+	f.exec("INSERT INTO injected VALUES ('s', 'u1'), ('o', 'u1')")
+	if err := ForgetSession(f.db, "s"); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"pending_paths", "session_repos", "injected"} {
+		if f.count("SELECT count(*) FROM "+table+" WHERE session_id = 's'") != 0 || f.count("SELECT count(*) FROM "+table+" WHERE session_id = 'o'") != 1 {
+			t.Fatalf("%s not purged for the forgotten session only", table)
+		}
+	}
+}
