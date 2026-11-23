@@ -144,7 +144,7 @@ func EnsureRepo(q db.Querier, identity, name string) (string, error) {
 }
 
 func Create(q db.Querier, name string, aliases []string, parent *string) (string, error) {
-	all, err := query(q, "ORDER BY uid")
+	all, err := query(q, "WHERE kind = 'subject' ORDER BY uid")
 	if err != nil {
 		return "", err
 	}

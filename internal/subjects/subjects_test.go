@@ -129,11 +129,15 @@ func TestCreateReturnsExistingByNormalizedName(t *testing.T) {
 	if again, _ := EnsureRepo(d, "github.com/exemple/atelier", "atelier"); again != tool {
 		t.Fatalf("dépôt créé deux fois : %s, %s", tool, again)
 	}
-	if got := create(t, d, "Atelier"); got != tool {
-		t.Fatalf("sujet homonyme d'un dépôt : %s, attendu %s", got, tool)
+	topic := create(t, d, "Atelier")
+	if topic == tool {
+		t.Fatal("sujet confondu avec le dépôt homonyme")
 	}
-	if n := count(t, d, "SELECT count(*) FROM subjects"); n != 3 {
-		t.Fatalf("%d sujets, attendu 3", n)
+	if again := create(t, d, "atelier"); again != topic {
+		t.Fatalf("homonyme d'un dépôt créé deux fois : %s, %s", topic, again)
+	}
+	if n := count(t, d, "SELECT count(*) FROM subjects"); n != 4 {
+		t.Fatalf("%d sujets, attendu 4", n)
 	}
 	s := get(t, d, network)
 	if s.Kind != "subject" || s.Name != "Réseau maison" || !slices.Equal(s.Aliases, []string{"box"}) {
@@ -432,21 +436,57 @@ func TestMergeIsAtomic(t *testing.T) {
 	}
 }
 
-func TestMergeIntoDescendantKeepsTree(t *testing.T) {
+func TestMergeIntoDescendantBreaksCycleOnModelEdge(t *testing.T) {
+	for _, c := range []struct {
+		what, from string
+		users      []string
+		want       map[string]string
+	}{
+		{"survivor edge from the model", "Maison", []string{"Baie", "Réseau"}, map[string]string{"NAS": "Quartier", "Réseau": "NAS", "Baie": "Réseau"}},
+		{"model edge above the survivor", "Maison", []string{"NAS", "Réseau"}, map[string]string{"NAS": "Baie", "Baie": "", "Réseau": "NAS"}},
+		{"only user edges", "Maison", []string{"NAS", "Baie", "Réseau", "Maison"}, map[string]string{"NAS": "Baie", "Baie": "Réseau", "Réseau": ""}},
+		{"survivor right under", "Baie", []string{"NAS"}, map[string]string{"NAS": "Réseau"}},
+	} {
+		t.Run(c.what, func(t *testing.T) {
+			d := openDB(t)
+			uid := map[string]string{"": ""}
+			chain := []string{"Quartier", "Maison", "Réseau", "Baie", "NAS"}
+			for i, name := range chain {
+				uid[name] = create(t, d, name)
+				if i > 0 {
+					setParent(t, d, uid[name], uid[chain[i-1]], Origin{User: slices.Contains(c.users, name)})
+				}
+			}
+			if err := Merge(d, uid[c.from], uid["NAS"]); err != nil {
+				t.Fatal(err)
+			}
+			for child, want := range c.want {
+				if parent, _, _ := parentOf(t, d, uid[child]); parent.String != uid[want] {
+					t.Errorf("parent de %s : %q, attendu %q (%s)", child, parent.String, uid[want], want)
+				}
+			}
+			if _, origin, _ := parentOf(t, d, uid["NAS"]); slices.Contains(c.users, "NAS") && c.from != "Baie" && origin.String != "user" {
+				t.Errorf("origine du parent du survivant : %q", origin.String)
+			}
+		})
+	}
+}
+
+func TestMergeKeepsSurvivorParent(t *testing.T) {
 	d := openDB(t)
-	home, network, nas := create(t, d, "Maison"), create(t, d, "Réseau"), create(t, d, "NAS")
-	setParent(t, d, network, home, Origin{})
-	setParent(t, d, nas, network, Origin{User: true})
-	if err := Merge(d, home, nas); err != nil {
+	home, office, nas, rack := create(t, d, "Maison"), create(t, d, "Bureau"), create(t, d, "NAS"), create(t, d, "Baie")
+	setParent(t, d, nas, home, Origin{User: true})
+	setParent(t, d, rack, office, Origin{})
+	if err := Merge(d, rack, nas); err != nil {
 		t.Fatal(err)
 	}
-	if parent, _, _ := parentOf(t, d, nas); parent.Valid {
-		t.Fatalf("le survivant garde un parent sous le sujet fusionné : %s", parent.String)
+	if parent, origin, _ := parentOf(t, d, nas); parent.String != home || origin.String != "user" {
+		t.Fatalf("parent utilisateur du survivant remplacé : %v %v", parent, origin)
 	}
-	if parent, _, _ := parentOf(t, d, network); parent.String != nas {
-		t.Fatalf("enfant du sujet fusionné : %v", parent)
-	}
+}
 
+func TestMergeIntoAncestorKeepsTree(t *testing.T) {
+	d := openDB(t)
 	office, desk, lamp := create(t, d, "Bureau"), create(t, d, "Table"), create(t, d, "Lampe")
 	setParent(t, d, desk, office, Origin{})
 	setParent(t, d, lamp, desk, Origin{})
@@ -481,8 +521,8 @@ func TestMergeDuplicatesByNameAndRepo(t *testing.T) {
 	fork2, _ := EnsureRepo(d, "gitlab.com/autre/outil", "outil")
 
 	n, err := MergeDuplicates(d)
-	if err != nil || n != 3 {
-		t.Fatalf("MergeDuplicates = %d, %v ; attendu 3", n, err)
+	if err != nil || n != 2 {
+		t.Fatalf("MergeDuplicates = %d, %v ; attendu 2", n, err)
 	}
 	survivor := slices.Min(network)
 	if s := count(t, d, "SELECT count(*) FROM subjects WHERE uid IN (?, ?, ?)", network[0], network[1], network[2]); s != 1 {
@@ -492,16 +532,13 @@ func TestMergeDuplicatesByNameAndRepo(t *testing.T) {
 	if n := count(t, d, "SELECT count(*) FROM points WHERE subject_uid = ?", survivor); n != 3 {
 		t.Fatalf("%d points sur le survivant", n)
 	}
-	s := get(t, d, min(tool, toolTopic))
-	if s.Kind != "repo" || s.Repo == nil || *s.Repo != "github.com/exemple/atelier" {
-		t.Fatalf("le survivant d'un dépôt doit garder son identité : %+v", s)
+	for _, uid := range []string{tool, toolTopic, fork1, fork2} {
+		get(t, d, uid)
 	}
-	get(t, d, fork1)
-	get(t, d, fork2)
-	if n := count(t, d, "SELECT count(*) FROM merged"); n != 3 {
+	if n := count(t, d, "SELECT count(*) FROM merged"); n != 2 {
 		t.Fatalf("%d traces de fusion", n)
 	}
-	if again, err := EnsureRepo(d, "github.com/exemple/atelier", "atelier"); err != nil || again != s.UID {
+	if again, err := EnsureRepo(d, "github.com/exemple/atelier", "atelier"); err != nil || again != tool {
 		t.Fatalf("dépôt retrouvé après fusion : %s, %v", again, err)
 	}
 

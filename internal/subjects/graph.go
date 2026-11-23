@@ -54,6 +54,26 @@ func column(q db.Querier, query string, args ...any) ([]string, error) {
 	return out, rows.Err()
 }
 
+type edge struct{ child, parent, origin string }
+
+// up stops at a subject already seen: a cycle brought by sync must not hang a hook.
+func up(q db.Querier, uid string) ([]edge, error) {
+	var path []edge
+	for seen := map[string]bool{}; !seen[uid]; {
+		seen[uid] = true
+		var parent, origin sql.NullString
+		if err := q.QueryRowContext(bg, "SELECT parent_uid, parent_origin FROM subjects WHERE uid = ?", uid).Scan(&parent, &origin); err != nil {
+			return nil, err
+		}
+		if !parent.Valid {
+			break
+		}
+		path = append(path, edge{uid, parent.String, origin.String})
+		uid = parent.String
+	}
+	return path, nil
+}
+
 func Descendants(q db.Querier, uid string) ([]string, error) {
 	return column(q, `WITH RECURSIVE under(uid) AS (
 		SELECT uid FROM subjects WHERE parent_uid = ?
@@ -266,17 +286,32 @@ func merge(q db.Querier, from, into string) error {
 	if err != nil {
 		return err
 	}
-	underFrom, err := Descendants(q, from)
+	fromUp, err := up(q, from)
 	if err != nil {
 		return err
 	}
-	underInto, err := Descendants(q, into)
+	intoUp, err := up(q, into)
 	if err != nil {
 		return err
 	}
-	// Sync replays merges, so a merge never refuses a cycle: into leaves from's
-	// subtree, and never takes a parent from its own.
-	if !slices.Contains(underInto, from) && (slices.Contains(underFrom, into) || !i.parent.Valid && i.origin.String != "user") {
+	path := intoUp[:slices.IndexFunc(intoUp, func(e edge) bool { return e.parent == from })+1]
+	// Sync replays merges, so a merge never refuses the cycle it would make
+	// when into lies under from: it drops a model edge of that path, else the
+	// edge that pointed at from; into's user parent stays.
+	take, drop := false, ""
+	switch {
+	case slices.ContainsFunc(fromUp, func(e edge) bool { return e.parent == into }):
+	case len(path) == 1 || len(path) > 1 && path[0].origin != "user":
+		take = true
+	case len(path) > 1:
+		drop = path[len(path)-1].child
+		if k := slices.IndexFunc(path, func(e edge) bool { return e.origin != "user" }); k >= 0 {
+			drop = path[k].child
+		}
+	default:
+		take = !i.parent.Valid && i.origin.String != "user"
+	}
+	if take {
 		i.parent, i.origin, i.episode = f.parent, f.origin, f.episode
 	}
 	if !i.repo.Valid && f.repo.Valid {
@@ -288,6 +323,7 @@ func merge(q db.Querier, from, into string) error {
 		{"UPDATE subjects SET kind = ?, repo = ?, aliases = ?, parent_uid = ?, parent_origin = ?, parent_episode_uid = ?, updated_at = ? WHERE uid = ?",
 			i.kind, i.repo, encode(union(i.name, i.aliases, f.aliases, []string{f.name})), i.parent, i.origin, i.episode, at, into},
 		{"UPDATE subjects SET parent_uid = ?, updated_at = ? WHERE parent_uid = ?", into, at, from},
+		{"UPDATE subjects SET parent_uid = NULL, parent_episode_uid = NULL, updated_at = ? WHERE uid = ?", at, drop},
 		{"UPDATE points SET subject_uid = ?, updated_at = ? WHERE subject_uid = ?", into, at, from},
 		{"UPDATE episodes SET updated_at = ? WHERE uid IN (SELECT episode_uid FROM episode_subjects WHERE subject_uid = ?)", at, from},
 		{"UPDATE repo_cache SET subject_uid = ? WHERE subject_uid = ?", into, from},
@@ -362,28 +398,23 @@ func moveLinks(q db.Querier, from, into, at string) error {
 	return nil
 }
 
-// Two repos never merge with each other: forks share a name (exemple/outil,
-// autre/outil).
+// Only subjects merge by name: a repo shares its name with its forks, and a
+// person may share a first name with a tool.
 func MergeDuplicates(q db.Querier) (int, error) {
-	all, err := query(q, "ORDER BY uid")
+	all, err := query(q, "WHERE kind = 'subject' ORDER BY uid")
 	if err != nil {
 		return 0, err
 	}
-	var kept []Subject
+	kept := map[string]string{}
 	n := 0
 	for _, s := range all {
-		i := slices.IndexFunc(kept, func(k Subject) bool {
-			return Normalize(k.Name) == Normalize(s.Name) && (k.Repo == nil || s.Repo == nil)
-		})
-		if i < 0 {
-			kept = append(kept, s)
+		into, ok := kept[Normalize(s.Name)]
+		if !ok {
+			kept[Normalize(s.Name)] = s.UID
 			continue
 		}
-		if err := Merge(q, s.UID, kept[i].UID); err != nil {
+		if err := Merge(q, s.UID, into); err != nil {
 			return n, err
-		}
-		if kept[i].Repo == nil {
-			kept[i].Repo = s.Repo
 		}
 		n++
 	}
