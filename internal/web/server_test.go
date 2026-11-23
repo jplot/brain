@@ -1074,6 +1074,21 @@ func TestForgetSession(t *testing.T) {
 	f.status(t, f.post("/api/sessions/forget", obj{"id": "sess-A"}), 404)
 }
 
+func TestSessionWithoutMessagesShownAndForgotten(t *testing.T) {
+	f := newFixture(t)
+	f.point(f.episode(episodeRow{session: "sess-seule", title: "Titre seul", summary: "Résumé seul"}), "", "fact", "Fait seul", 3)
+	view := f.get("/api/sessions/sess-seule")
+	f.status(t, view, 200)
+	if !strings.Contains(string(view.body), "Titre seul") {
+		t.Fatal(string(view.body))
+	}
+	f.status(t, f.post("/api/sessions/forget", obj{"id": "sess-seule"}), 200)
+	f.status(t, f.get("/api/sessions/sess-seule"), 404)
+	if len(f.points("")) != 0 {
+		t.Fatal("point kept")
+	}
+}
+
 func TestSessionSummaryAndCounters(t *testing.T) {
 	f := newFixture(t)
 	w := f.memories()

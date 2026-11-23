@@ -375,8 +375,9 @@ func ResolveSession(q db.Querier, ref string) (string, error) {
 	if ref == "" {
 		return "", nil
 	}
-	ids, err := collect(q, "SELECT DISTINCT m.session_id"+from+
-		` WHERE (m.session_id = ? OR m.session_id LIKE ? ESCAPE '\')`+" ORDER BY m.session_id",
+	// A rebuild without its transcript leaves a session with episodes and no message.
+	ids, err := collect(q, "SELECT id FROM (SELECT session_id AS id FROM messages UNION SELECT session_id FROM episodes)"+
+		` WHERE (id = ? OR id LIKE ? ESCAPE '\')`+" ORDER BY id",
 		[]any{ref, escapeLike(ref) + "%"},
 		func(r *sql.Rows) (id string, err error) { return id, r.Scan(&id) })
 	if err != nil {
@@ -394,7 +395,7 @@ func ResolveSession(q db.Querier, ref string) (string, error) {
 	return "", &ErrAmbiguousSession{Ref: ref, IDs: ids}
 }
 
-// SessionView returns a nil row when the session is absent or has no visible message.
+// SessionView returns a nil row when the session has neither a message nor an episode.
 func SessionView(q db.Querier, ref string) (*SessionRow, []Message, error) {
 	id, err := ResolveSession(q, ref)
 	if err != nil || id == "" {
@@ -403,6 +404,19 @@ func SessionView(q db.Querier, ref string) (*SessionRow, []Message, error) {
 	found, err := sessionRows(q, []string{id})
 	if err != nil {
 		return nil, nil, err
+	}
+	if found[id] == nil {
+		row := &SessionRow{ID: id}
+		if err := q.QueryRowContext(background, "SELECT MIN(start_ts), MAX(end_ts), (SELECT title FROM sessions WHERE id = ?1)"+
+			" FROM episodes WHERE session_id = ?1", id).Scan(&row.StartedAt, &row.EndedAt, &row.Title); err != nil {
+			return nil, nil, err
+		}
+		names, err := sessionSubjects(q, []string{id})
+		if err != nil {
+			return nil, nil, err
+		}
+		row.Subjects = names[id]
+		found[id] = row
 	}
 	messages, err := collect(q, "SELECT m.id, m.session_id, m.ts, m.role, m.git_branch, m.text"+
 		from+" WHERE m.session_id = ? ORDER BY m.ts, m.id", []any{id},

@@ -329,6 +329,20 @@ func TestSessionHidesSummaryAfterForgettingAPoint(t *testing.T) {
 	contains(t, out, "Reste")
 }
 
+func TestSessionWithoutMessagesShownAndForgotten(t *testing.T) {
+	f := newFixture(t)
+	f.say(s1, "une pomme")
+	f.ok("index")
+	f.point(f.episode(s1, "Résumé gardé", "Les pommes."), "", "fact", "Un fait gardé")
+	os.RemoveAll(f.p.Transcripts)
+	f.ok("rebuild")
+	contains(t, f.ok("session", "aaaa"), "Résumé : Résumé gardé", "Un fait gardé")
+	contains(t, f.ok("forget", "--yes", "session", "aaaa"), "Oublié : la session aaaaaaaa")
+	if n := f.count("SELECT count(*) FROM points"); n != 0 {
+		t.Fatalf("%d points", n)
+	}
+}
+
 func TestSessionUntitledAndMissing(t *testing.T) {
 	f := newFixture(t)
 	f.say(s1, "une pomme")
