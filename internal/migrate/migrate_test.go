@@ -669,6 +669,28 @@ func TestVocalConvertedKeepsSessionIDs(t *testing.T) {
 	equal(t, pending, []string{"vocal-2025-11-24"})
 }
 
+func TestVocalRowsOfTheOldIndexIndexedOnce(t *testing.T) {
+	saved := time.Local
+	time.Local = time.FixedZone("UTC+2", 2*3600)
+	t.Cleanup(func() { time.Local = saved })
+	for _, journal := range []bool{true, false} {
+		f := newFixture(t)
+		f.build(append(f.sample(), `INSERT INTO messages VALUES (20,'vocal:vocal-2023-11-15:1700000000.9999995:agent','vocal-2023-11-15',
+			'/ancien/brain/vocal/conversation.jsonl','2023-11-14T22:13:21.000Z','sous_agent','`+f.root+`',NULL,'le rapport')`)...).Close()
+		converted, archived := "0", "1"
+		if journal {
+			f.writeVocal(`{"t":1700000000.9999996,"type":"agent","resultat":"le rapport"}` + "\n")
+			converted, archived = "1", "0"
+		}
+		out := f.migrate()
+		if !strings.Contains(out, "Lignes vocales converties : "+converted+"\n") || !strings.Contains(out, "Messages archivés : "+archived+"\n") {
+			t.Fatalf("journal=%v:\n%s", journal, out)
+		}
+		equal(t, column(t, f.open(), "SELECT session_id||' '||ts||' '||role||' '||text FROM messages"),
+			[]string{"vocal-2023-11-15 2023-11-14T22:13:21.000Z subagent le rapport"})
+	}
+}
+
 func TestVocalSkipsCancelledAndDelegated(t *testing.T) {
 	dir := t.TempDir()
 	from := filepath.Join(dir, "conversation.jsonl")

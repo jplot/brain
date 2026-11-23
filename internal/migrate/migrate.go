@@ -96,10 +96,13 @@ func Run(old, root string, p paths.Paths, out io.Writer) (err error) {
 	for _, name := range transcripts {
 		kept[real.path(name)] = true
 	}
-	if _, err := os.Stat(vocalPath); err == nil {
-		kept[real.path(vocalPath)] = true
+	_, err = os.Stat(vocalPath)
+	converted := err == nil
+	// The old version keyed vocal lines, and only them, "vocal:": a copied base still names the
+	// journal at its old path. Without the journal, the old index is all that is left of them.
+	read := func(file, key string) bool {
+		return kept[real.path(file)] || converted && strings.HasPrefix(key, "vocal:")
 	}
-	read := func(file string) bool { return kept[real.path(file)] }
 	c, err := importBase(ctx, copied, root, staged, read)
 	if err != nil {
 		return err
@@ -238,7 +241,7 @@ func copyFile(from, to string) error {
 	return errors.Join(err, out.Close())
 }
 
-func importBase(ctx context.Context, old, root string, staged paths.Paths, read func(file string) bool) (counts, error) {
+func importBase(ctx context.Context, old, root string, staged paths.Paths, read func(file, key string) bool) (counts, error) {
 	var c counts
 	src, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: old, RawQuery: "mode=ro"}).String())
 	if err != nil {
