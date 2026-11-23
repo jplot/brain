@@ -20,6 +20,7 @@ import (
 
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/index"
+	"github.com/jplot/brain/internal/lock"
 	"github.com/jplot/brain/internal/paths"
 	"github.com/jplot/brain/internal/repo"
 	"github.com/jplot/brain/internal/subjects"
@@ -27,7 +28,10 @@ import (
 
 var rebuild = index.Rebuild
 
-var ErrAlreadyDone = errors.New("paul.db existe déjà : la reprise a déjà eu lieu")
+var (
+	ErrHasMemories  = errors.New("paul.db contient déjà des souvenirs : la reprise doit se faire avant tout résumé")
+	ErrConcurrentDB = errors.New("paul.db a été recréé pendant la reprise : relancez-la")
+)
 
 var (
 	errInterrupted = errors.New("interrompue avant la fin : rien n'est écrit, la copie de travail est effacée")
@@ -62,9 +66,7 @@ func Run(old, root string, p paths.Paths, out io.Writer) (err error) {
 			return err
 		}
 	}
-	if _, err := os.Stat(p.DB()); err == nil {
-		return ErrAlreadyDone
-	} else if !errors.Is(err, fs.ErrNotExist) {
+	if err := withoutMemories(p); err != nil {
 		return err
 	}
 	if old, err = filepath.Abs(old); err != nil {
@@ -124,16 +126,27 @@ func Run(old, root string, p paths.Paths, out io.Writer) (err error) {
 	if ctx.Err() != nil {
 		return errInterrupted
 	}
-	if err := commit(staged, p, journals); err != nil {
+	// Under the index lock, no index pass writes into the base being replaced.
+	release, _, err := lock.Writer(p.IndexLock(), true)
+	if err != nil {
+		return err
+	}
+	err = replace(p)
+	if err == nil {
+		err = commit(staged, p, journals)
+	}
+	release()
+	if err != nil {
 		return err
 	}
 	// From here the import is done: Ctrl-C during the index rebuild stops paul as usual.
 	committed = true
 	stop()
-	if err := os.RemoveAll(stage); err != nil {
-		return fmt.Errorf("reprise faite, mais la copie de l'ancienne base reste dans %s : %w", stage, err)
-	}
 	fmt.Fprintf(out, "Reprise terminée depuis %s.\n", old)
+	if err := os.RemoveAll(stage); err != nil {
+		log.Printf("migrate : copie de travail non effacée : %v", err)
+		fmt.Fprintf(out, "La copie de l'ancienne base reste dans %s : à effacer à la main.\n", stage)
+	}
 	if !c.rootSeen {
 		fmt.Fprintf(out, "Racine des projets absente de l'ancienne base : %s (option --root)\n", root)
 	}
@@ -151,6 +164,39 @@ func Run(old, root string, p paths.Paths, out io.Writer) (err error) {
 		return nil
 	}
 	fmt.Fprintf(out, "Index reconstruit : %d fichiers, %d messages\n", stats.Files, stats.Messages)
+	return nil
+}
+
+// The first hook creates paul.db, so a base without memories cannot mean the import already ran.
+func withoutMemories(p paths.Paths) error {
+	if _, err := os.Stat(p.DB()); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	conn, err := db.Open(p, 5*time.Second)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	var found bool
+	if err := conn.QueryRow("SELECT EXISTS(SELECT 1 FROM episodes) OR EXISTS(SELECT 1 FROM points)" +
+		" OR EXISTS(SELECT 1 FROM forgotten_sessions) OR EXISTS(SELECT 1 FROM forgotten_points)").Scan(&found); err != nil {
+		return err
+	}
+	if found {
+		return ErrHasMemories
+	}
+	return nil
+}
+
+func replace(p paths.Paths) error {
+	if err := withoutMemories(p); err != nil {
+		return err
+	}
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		if err := os.Remove(p.DB() + suffix); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -188,7 +234,7 @@ func commit(staged, p paths.Paths, journals []string) error {
 	}
 	err := os.Link(staged.DB(), p.DB())
 	if errors.Is(err, fs.ErrExist) {
-		err = ErrAlreadyDone
+		err = ErrConcurrentDB
 	}
 	if err != nil {
 		return undo(err)

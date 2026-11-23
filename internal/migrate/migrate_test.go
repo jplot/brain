@@ -380,7 +380,7 @@ func TestMigrateRefusesTwice(t *testing.T) {
 	f.migrate()
 	journal := filepath.Join(f.p.Journals(), "vocal.jsonl")
 	dbHash, journalHash := hash(t, f.p.DB()), hash(t, journal)
-	if err := Run(f.old, f.root, f.p, io.Discard); !errors.Is(err, ErrAlreadyDone) {
+	if err := Run(f.old, f.root, f.p, io.Discard); !errors.Is(err, ErrHasMemories) {
 		t.Fatalf("got %v", err)
 	}
 	if hash(t, f.p.DB()) != dbHash || hash(t, journal) != journalHash {
@@ -394,6 +394,38 @@ func TestMigrateRefusesTwice(t *testing.T) {
 	}
 }
 
+func (f *fixture) firstHook(statements ...string) {
+	f.t.Helper()
+	conn := f.open()
+	for _, s := range append([]string{"INSERT INTO injected VALUES ('s-hook', 'u-hook')"}, statements...) {
+		if _, err := conn.Exec(s); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+	conn.Close()
+}
+
+func TestMigrateReplacesABaseWithoutMemories(t *testing.T) {
+	f := newFixture(t)
+	f.build(f.sample()...).Close()
+	f.firstHook()
+	f.migrate()
+	conn := f.open()
+	equal(t, column(t, conn, "SELECT count(*) FROM injected"), []string{"0"})
+	equal(t, column(t, conn, "SELECT count(*) FROM points"), []string{"4"})
+}
+
+func TestMigrateRefusesABaseWithMemories(t *testing.T) {
+	f := newFixture(t)
+	f.build(f.sample()...).Close()
+	f.firstHook("INSERT INTO episodes(uid, session_id, start_ts, end_ts, created_at, updated_at) VALUES ('e', 's', 'a', 'a', 'a', 'a')")
+	err := Run(f.old, f.root, f.p, io.Discard)
+	if err == nil || err.Error() != "paul.db contient déjà des souvenirs : la reprise doit se faire avant tout résumé" {
+		t.Fatalf("got %v", err)
+	}
+	equal(t, column(t, f.open(), "SELECT count(*) FROM episodes"), []string{"1"})
+}
+
 func TestMigrateRemovesLeftoverStaging(t *testing.T) {
 	for _, done := range []bool{false, true} {
 		f := newFixture(t)
@@ -402,8 +434,8 @@ func TestMigrateRemovesLeftoverStaging(t *testing.T) {
 		os.MkdirAll(leftover, 0o700)
 		os.WriteFile(filepath.Join(leftover, "brain.db"), []byte("ancienne mémoire"), 0o600)
 		if done {
-			os.WriteFile(f.p.DB(), nil, 0o600)
-			if err := Run(f.old, f.root, f.p, io.Discard); !errors.Is(err, ErrAlreadyDone) {
+			f.firstHook("INSERT INTO forgotten_points VALUES ('p', 'a')")
+			if err := Run(f.old, f.root, f.p, io.Discard); !errors.Is(err, ErrHasMemories) {
 				t.Fatalf("got %v", err)
 			}
 		} else {
@@ -426,7 +458,7 @@ func TestMigrateDoneEvenIfIndexFails(t *testing.T) {
 		return index.Stats{}, errors.New("disque plein")
 	}
 	out := f.migrate()
-	equal(t, during, []string{"paul.db"})
+	equal(t, during, []string{"index.lock", "paul.db"})
 	if !strings.Contains(out, "Points : 4") || !strings.Contains(out, "Index non reconstruit : il le sera au prochain lancement de paul") {
 		t.Fatal(out)
 	}
@@ -515,7 +547,7 @@ func TestMigrateLosesToConcurrentDatabase(t *testing.T) {
 	os.WriteFile(staged.DB(), nil, 0o600)
 	f.p.EnsureHome()
 	os.WriteFile(f.p.DB(), []byte("hook"), 0o600)
-	if err := commit(staged, f.p, []string{"vocal.jsonl"}); !errors.Is(err, ErrAlreadyDone) {
+	if err := commit(staged, f.p, []string{"vocal.jsonl"}); !errors.Is(err, ErrConcurrentDB) {
 		t.Fatalf("got %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(f.p.Journals(), "vocal.jsonl")); !errors.Is(err, os.ErrNotExist) {
@@ -541,7 +573,7 @@ func TestMigrateRefusesExistingJournal(t *testing.T) {
 		if b, _ := os.ReadFile(existing); string(b) != "déjà là\n" {
 			t.Fatalf("%s replaced", name)
 		}
-		equal(t, tree(t, f.p.Home), []string{"journals", "journals/" + name})
+		equal(t, tree(t, f.p.Home), []string{"index.lock", "journals", "journals/" + name})
 	}
 }
 

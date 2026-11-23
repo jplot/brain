@@ -60,7 +60,7 @@ cwd      facultatif ; indice de dépôt pour le résumeur
 
 1. Arrêter ce qui utilise l'ancienne base : les hooks `brain hook` de Claude Code (sessions ouvertes comprises), tout `brain web` en cours et tout processus Python de l'ancienne version.
 2. Retirer les hooks `brain hook` de `~/.claude/settings.json` et le skill `~/.claude/skills/souvenirs/`.
-3. Lancer `paul migrate` (options `--from` pour le chemin de l'ancienne base, `--root` pour la racine de ses projets). La commande refuse de s'exécuter si `paul.db` existe déjà. Chaque ancien projet devient un sujet, les points sont rattachés à leur sujet, les étiquettes et les accès sont abandonnés, puis l'index est reconstruit.
+3. Lancer `paul migrate` (options `--from` pour le chemin de l'ancienne base, `--root` pour la racine de ses projets). La commande refuse de s'exécuter si `paul.db` contient déjà des souvenirs ; une base créée par les premiers hooks, encore sans souvenirs, est remplacée. Chaque ancien projet devient un sujet, les points sont rattachés à leur sujet, les étiquettes et les accès sont abandonnés, puis l'index est reconstruit.
 4. Le journal de l'assistant vocal de l'ancienne version est converti au format v1 dans `~/.claude/paul/journals/vocal.jsonl`.
 
 L'ancienne base n'est jamais modifiée : `paul migrate` n'en lit qu'une copie.
