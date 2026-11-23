@@ -13,12 +13,12 @@ fi
 
 log() {
   (umask 077; mkdir -p "$home"; printf '%s launcher: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "$home/paul.log")
-  [ "$mode" = command ] && echo "paul : $1" >&2
+  [ "$mode" = command ] && echo "paul: $1" >&2
   return 1
 }
 
 say() {
-  [ "$mode" = command ] && echo "paul : $1" >&2
+  [ "$mode" = command ] && echo "paul: $1" >&2
   return 0
 }
 
@@ -46,16 +46,16 @@ sha256_of() {
 }
 
 install() {
-  [ -n "$version" ] || { log "version introuvable dans plugin.json"; return 1; }
+  [ -n "$version" ] || { log "version not found in plugin.json"; return 1; }
   case "$(uname -s)" in
     Darwin) os=darwin ;;
     Linux) os=linux ;;
-    *) log "système non pris en charge : $(uname -s)"; return 1 ;;
+    *) log "unsupported system: $(uname -s)"; return 1 ;;
   esac
   case "$(uname -m)" in
     arm64 | aarch64) arch=arm64 ;;
     x86_64 | amd64) arch=amd64 ;;
-    *) log "architecture non prise en charge : $(uname -m)"; return 1 ;;
+    *) log "unsupported architecture: $(uname -m)"; return 1 ;;
   esac
   name=paul-$os-$arch
   url=https://github.com/jplot/brain/releases/download/v$version
@@ -64,7 +64,7 @@ install() {
   acquire
   case $? in
     0) ;;
-    2) log "verrou d'installation toujours pris, abandon"; return 1 ;;
+    2) log "install lock still held, giving up"; return 1 ;;
     *) return 0 ;;
   esac
   part=$home/bin/.paul-$version.part.$$
@@ -84,10 +84,10 @@ download() {
 
 fetch() {
   [ -x "$bin" ] && return 0
-  say "téléchargement de $name $version"
+  say "downloading $name $version"
   if ! download "$part" "$url/$name" || ! download "$sums" "$url/checksums.txt"; then
     rm -f "$part" "$sums"
-    log "échec du téléchargement de $name $version"
+    log "download of $name $version failed"
     return 1
   fi
   expected=$(awk -v n="$name" '$2 == n { print $1 }' "$sums")
@@ -95,7 +95,7 @@ fetch() {
   rm -f "$sums"
   if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
     rm -f "$part"
-    log "empreinte incorrecte pour $name $version, binaire écarté"
+    log "checksum mismatch for $name $version, binary discarded"
     return 1
   fi
   chmod 755 "$part" && mv -f "$part" "$bin"

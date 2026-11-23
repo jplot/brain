@@ -254,10 +254,10 @@ func TestBadChecksum(t *testing.T) {
 				if r.stdout != "" || r.stderr != "" {
 					t.Fatalf("hook printed: %+v", r)
 				}
-				waitFor(t, func() bool { return strings.Contains(e.readLog(), "empreinte") })
+				waitFor(t, func() bool { return strings.Contains(e.readLog(), "checksum") })
 				waitFor(t, func() bool { _, err := os.Stat(filepath.Join(e.home, "install.lock")); return err != nil })
 			}
-			if !strings.Contains(e.readLog(), "empreinte") {
+			if !strings.Contains(e.readLog(), "checksum") {
 				t.Fatalf("paul.log: %q", e.readLog())
 			}
 			e.assertNothingInstalled()
@@ -293,7 +293,7 @@ func TestCurlFailureThenNextLaunchRetries(t *testing.T) {
 			if mode == "hook" && (r.stdout != "" || r.stderr != "") {
 				t.Fatalf("hook printed: %+v", r)
 			}
-			waitFor(t, func() bool { return strings.Contains(e.readLog(), "téléchargement") })
+			waitFor(t, func() bool { return strings.Contains(e.readLog(), "download of") })
 			waitFor(t, func() bool { _, err := os.Stat(filepath.Join(e.home, "install.lock")); return err != nil })
 			e.assertNothingInstalled()
 
@@ -396,7 +396,7 @@ func TestChecksumsWithoutTheLineOrWithDuplicatesAreRejected(t *testing.T) {
 			if r := e.run("search", "mot"); r.code != 1 {
 				t.Fatalf("exit %d: %+v", r.code, r)
 			}
-			if !strings.Contains(e.readLog(), "empreinte") {
+			if !strings.Contains(e.readLog(), "checksum") {
 				t.Fatalf("paul.log: %q", e.readLog())
 			}
 			e.assertNothingInstalled()
