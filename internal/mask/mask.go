@@ -14,9 +14,12 @@ import (
 
 const Marker = "[secret masqué]"
 
-// budget bounds one Text call. Every expression gets the time left as its match
-// timeout; whatever is not examined in time becomes Marker (text is lost, never leaked).
-const budget = time.Second
+// budgetFor bounds one Text call; text not examined in time becomes Marker (lost, never leaked).
+// It grows with the input: 1 MiB of letters takes 0.33 s on an Apple M5 Pro but passed a flat
+// 1 s on a GitHub runner, which wiped the whole message.
+func budgetFor(s string) time.Duration {
+	return time.Second + time.Duration(len(s)/1024)*2*time.Millisecond
+}
 
 // maxDepth is the Python reference's bound, kept so both versions mask the same text.
 const maxDepth = 8
@@ -268,7 +271,7 @@ func (r *run) once(text string) string {
 
 // Text masks every secret in s. Passes repeat until stable: a pattern can reveal another
 // once the first is masked ("AKIA…ghp_…").
-func Text(s string) string { return textWithin(s, budget) }
+func Text(s string) string { return textWithin(s, budgetFor(s)) }
 
 // The lock is needed because MatchTimeout lives on the shared compiled expressions.
 func textWithin(s string, limit time.Duration) string {

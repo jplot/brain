@@ -59,3 +59,12 @@ func TestConcurrentCallsDoNotShareAnotherCallsTimeout(t *testing.T) {
 		t.Fatalf("%d calls were wiped by another call's timeout, first ends with %q", n, <-wiped)
 	}
 }
+
+func TestBudgetGrowsWithTheInput(t *testing.T) {
+	if got := budgetFor(""); got != time.Second {
+		t.Fatalf("empty input: %v", got)
+	}
+	if got := budgetFor(strings.Repeat("A", 1<<20)); got < 3*time.Second {
+		t.Fatalf("1 MiB: %v", got)
+	}
+}
