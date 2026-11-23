@@ -14,8 +14,7 @@ import (
 const Timeout = 300 * time.Second
 
 const (
-	model = "haiku"
-	// Provisional: a paid comparison of low and medium on real sessions settles it.
+	model  = "haiku"
 	effort = "medium"
 )
 

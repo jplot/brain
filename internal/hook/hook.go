@@ -37,7 +37,6 @@ type payload struct {
 	Prompt         string `json:"prompt"`
 }
 
-// Run executes one hook and always returns 0.
 func Run(event string, p paths.Paths, stdin io.Reader, stdout io.Writer) int {
 	in := readPayload(stdin)
 	switch event {
@@ -195,7 +194,6 @@ func emit(stdout io.Writer, name string, budget time.Duration, work func() (stri
 	}
 }
 
-// detach starts paul in its own session and does not wait for it.
 func detach(args []string) {
 	exe, err := executable()
 	if err != nil {

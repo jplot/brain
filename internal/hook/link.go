@@ -10,7 +10,6 @@ import (
 	"github.com/jplot/brain/internal/paths"
 )
 
-// LinkCommand points BinDir/paul at the versioned binary in p.Bin() and removes the older ones.
 // A regular file at the target is the user's own and is never replaced.
 func LinkCommand(p paths.Paths, version string) error {
 	if version == "" || version == "dev" {

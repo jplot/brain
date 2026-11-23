@@ -249,7 +249,6 @@ type Scored struct {
 	Score float64
 }
 
-// Score sums recency, importance and relevance with equal weights, each in [0,1].
 func Score(points []Point, relevance map[int64]float64, now time.Time) []Scored {
 	out := make([]Scored, len(points))
 	for i, p := range points {
