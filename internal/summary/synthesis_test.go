@@ -296,7 +296,7 @@ func TestSynthesisInputBoundedAndRanked(t *testing.T) {
 	}
 }
 
-func TestForgottenCitedPointMarksStale(t *testing.T) {
+func TestForgottenUncitedPointMarksStale(t *testing.T) {
 	f := newFixture(t)
 	points := f.backlog(f.home, 20)
 	other := f.subject("Autre")
@@ -304,12 +304,6 @@ func TestForgottenCitedPointMarksStale(t *testing.T) {
 	Synthesize(f.db, camille, f.home, newModel(synthesisOf("A", points[0], points[1])).run, now0)
 	Synthesize(f.db, camille, other, newModel(synthesisOf("B", otherPoints[0], otherPoints[1])).run, now0)
 	if err := memory.ForgetPoint(f.db, points[2]); err != nil {
-		t.Fatal(err)
-	}
-	if r, _ := f.synthesis(f.home); r.stale != 0 {
-		t.Fatal("uncited point staled the synthesis")
-	}
-	if err := memory.ForgetPoint(f.db, points[0]); err != nil {
 		t.Fatal(err)
 	}
 	if r, _ := f.synthesis(f.home); r.stale != 1 {
@@ -336,6 +330,90 @@ func TestSynthesisDroppedWhenCitedPointForgottenDuringCall(t *testing.T) {
 		t.Fatalf("%+v", out)
 	}
 	if _, ok := f.synthesis(f.home); ok {
+		t.Fatal("written")
+	}
+}
+
+func (f *fixture) family() (parent, child string, childPoints []int64) {
+	f.t.Helper()
+	child, err := subjects.Create(f.db, "Sous-sujet", nil, &f.home)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	childPoints = f.backlog(child, 15)
+	Synthesize(f.db, camille, child, newModel(synthesisOf("Enfant", childPoints[0], childPoints[1])).run, now0)
+	return f.home, child, childPoints
+}
+
+func TestForgottenChildPointStalesAncestors(t *testing.T) {
+	f := newFixture(t)
+	grand := f.subject("Racine")
+	f.exec("UPDATE subjects SET parent_uid = ? WHERE uid = ?", grand, f.home)
+	parent, _, childPoints := f.family()
+	points := f.backlog(parent, 15)
+	for _, uid := range []string{parent, grand} {
+		f.exec("INSERT INTO syntheses(subject_uid, uid, text, cited, created_at, updated_at) VALUES (?, ?, 'résumé', ?, ?, ?)",
+			uid, "y-"+uid, fmt.Sprintf(`["sp-%d"]`, points[0]), t0, t0)
+	}
+	if err := memory.ForgetPoint(f.db, childPoints[0]); err != nil {
+		t.Fatal(err)
+	}
+	for _, uid := range []string{parent, grand} {
+		if r, _ := f.synthesis(uid); r.stale != 1 {
+			t.Fatal("ancestor not stale", uid)
+		}
+	}
+}
+
+func TestForgottenSessionStalesAncestors(t *testing.T) {
+	f := newFixture(t)
+	parent, _, childPoints := f.family()
+	points := f.backlog(parent, 15)
+	Synthesize(f.db, camille, parent, newModel(synthesisOf("Parent", points[0], points[1])).run, now0)
+	f.exec("INSERT INTO episodes(uid, session_id, start_ts, end_ts, created_at, updated_at) VALUES ('e-oubli', 's9', ?, ?, ?, ?)", t0, t0, t0, t0)
+	f.exec("UPDATE points SET episode_id = (SELECT id FROM episodes WHERE uid = 'e-oubli') WHERE id = ?", childPoints[2])
+	if err := memory.ForgetSession(f.db, f.p, "s9"); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := f.synthesis(parent); r.stale != 1 {
+		t.Fatal("parent not stale")
+	}
+}
+
+func TestSynthesisDroppedWhenUncitedPointForgottenDuringCall(t *testing.T) {
+	f := newFixture(t)
+	points := f.backlog(f.home, 15)
+	run := func(prompt, system string, schema any) (Result, error) {
+		if err := memory.ForgetPoint(f.db, points[2]); err != nil {
+			t.Fatal(err)
+		}
+		return Result{Data: synthesisOf("ok", points[0], points[1])}, nil
+	}
+	if out := Synthesize(f.db, camille, f.home, run, now0); out.Status != Already {
+		t.Fatalf("%+v", out)
+	}
+	if _, ok := f.synthesis(f.home); ok {
+		t.Fatal("written")
+	}
+}
+
+func TestSynthesisDroppedWhenChildPointForgottenDuringCall(t *testing.T) {
+	f := newFixture(t)
+	parent, _, childPoints := f.family()
+	points := f.backlog(parent, 15)
+	run := func(prompt, system string, schema any) (Result, error) {
+		if !strings.Contains(prompt, "Enfant") {
+			t.Fatal("child synthesis not given", prompt)
+		}
+		if err := memory.ForgetPoint(f.db, childPoints[0]); err != nil {
+			t.Fatal(err)
+		}
+		return Result{Data: synthesisOf("ok", points[0], points[1])}, nil
+	}
+	if out := Synthesize(f.db, camille, parent, run, now0); out.Status != Already {
+		t.Fatalf("%+v", out)
+	}
+	if _, ok := f.synthesis(parent); ok {
 		t.Fatal("written")
 	}
 }

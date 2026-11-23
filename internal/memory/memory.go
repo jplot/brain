@@ -416,6 +416,11 @@ func write(d *sql.DB, steps func(*sql.Conn) error) (err error) {
 	return flush(conn)
 }
 
+// A synthesis may say what a point said without citing it, and a parent's is written from its children's.
+const staleTree = "UPDATE syntheses SET stale = 1, updated_at = ? WHERE subject_uid IN (WITH RECURSIVE up(uid) AS" +
+	" (SELECT subject_uid FROM points WHERE %s UNION SELECT s.parent_uid FROM subjects s JOIN up ON s.uid = up.uid" +
+	" WHERE s.parent_uid IS NOT NULL) SELECT uid FROM up)"
+
 func ForgetPoint(d *sql.DB, id int64) error {
 	return write(d, func(c *sql.Conn) error {
 		var uid string
@@ -434,6 +439,7 @@ func ForgetPoint(d *sql.DB, id int64) error {
 		}{
 			{"UPDATE episodes SET summary_stale = 1, updated_at = ? WHERE id = ?", []any{at, episode}},
 			{"UPDATE syntheses SET stale = 1, updated_at = ? WHERE EXISTS (SELECT 1 FROM json_each(cited) WHERE value = ?)", []any{at, uid}},
+			{fmt.Sprintf(staleTree, "id = ?"), []any{at, id}},
 			{"INSERT OR REPLACE INTO forgotten_points(uid, at) VALUES (?, ?)", []any{uid, at}},
 			{"DELETE FROM point_usage WHERE uid = ?", []any{uid}},
 			{"DELETE FROM points WHERE id = ?", []any{id}},
@@ -456,6 +462,10 @@ func ForgetSession(q db.Querier, p paths.Paths, sessionID string) error {
 		if _, err := c.ExecContext(background, "UPDATE syntheses SET stale = 1, updated_at = ? WHERE EXISTS"+
 			" (SELECT 1 FROM json_each(cited) j WHERE j.value IN (SELECT p.uid FROM points p"+
 			" JOIN episodes e ON e.id = p.episode_id WHERE e.session_id = ?))", now(), sessionID); err != nil {
+			return err
+		}
+		if _, err := c.ExecContext(background, fmt.Sprintf(staleTree, "episode_id IN (SELECT id FROM episodes WHERE session_id = ?)"),
+			now(), sessionID); err != nil {
 			return err
 		}
 		if _, err := c.ExecContext(background, "INSERT OR IGNORE INTO forgotten_sessions(session_id, at) VALUES (?, ?)",

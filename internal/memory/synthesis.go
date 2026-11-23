@@ -19,10 +19,10 @@ func Synthesis(q db.Querier, subjectUID string) (string, error) {
 	return text, rows.Err()
 }
 
-type ChildSynthesis struct{ Name, Text string }
+type ChildSynthesis struct{ UID, Name, Text string }
 
 func ChildSyntheses(q db.Querier, parentUID string, limit int) ([]ChildSynthesis, error) {
-	rows, err := q.QueryContext(background, "SELECT s.name, y.text FROM subjects s JOIN syntheses y ON y.subject_uid = s.uid"+
+	rows, err := q.QueryContext(background, "SELECT s.uid, s.name, y.text FROM subjects s JOIN syntheses y ON y.subject_uid = s.uid"+
 		" WHERE s.parent_uid = ? AND y.stale = 0 ORDER BY s.name, s.uid LIMIT ?", parentUID, limit)
 	if err != nil {
 		return nil, err
@@ -31,7 +31,7 @@ func ChildSyntheses(q db.Querier, parentUID string, limit int) ([]ChildSynthesis
 	var out []ChildSynthesis
 	for rows.Next() {
 		var c ChildSynthesis
-		if err := rows.Scan(&c.Name, &c.Text); err != nil {
+		if err := rows.Scan(&c.UID, &c.Name, &c.Text); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
