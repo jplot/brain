@@ -19,7 +19,7 @@ Aucun réglage n'est nécessaire. Variables facultatives : `PAUL_HOME` (défaut 
 
 ## Résumés
 
-Dès la deuxième session, chaque session est résumée en arrière-plan par `claude -p` avec Haiku, et les synthèses des sujets sont écrites avec Sonnet. Le modèle reçoit le texte masqué des conversations et les souvenirs qui en sont tirés. Un résumé coûte environ 0,003 $ par session (mesuré), une synthèse avec Sonnet environ 0,05 $, au plus 10 synthèses par passage.
+Dès la deuxième session, chaque session est résumée en arrière-plan par `claude -p` avec Haiku, et les synthèses des sujets sont écrites avec Sonnet. Le modèle reçoit le texte masqué des conversations et les souvenirs qui en sont tirés. Un résumé coûte environ 0,003 $ par session (mesuré). Une synthèse coûte davantage, le modèle étant Sonnet, et chaque passage en écrit au plus 10.
 
 ## Commandes
 
