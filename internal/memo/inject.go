@@ -108,7 +108,7 @@ func Plan(q db.Querier, sessionID, prompt string) (Injection, error) {
 		for i, c := range d.candidates {
 			names[i] = c.Name
 		}
-		out = append(out, fmt.Sprintf("Plusieurs sujets portent le nom « %s » : %s. Précise, ou cherche avec paul souvenirs.", d.term, strings.Join(names, ", ")))
+		out = append(out, fmt.Sprintf("Several subjects are named \"%s\": %s. Be specific, or search with paul souvenirs.", d.term, strings.Join(names, ", ")))
 	}
 	now := time.Now()
 	shown := 0
