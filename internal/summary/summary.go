@@ -829,9 +829,20 @@ func (r *refs) graph(e episode) error {
 		uid := ""
 		if s.name != "" {
 			var err error
-			// Haiku created a subject beside the candidate repository of the same name; Create never matches a
-			// repository, since a person may share a tool's name, so only a repository shown to the model is reused.
-			if repo, ok := e.repos[subjects.Normalize(s.name)]; ok {
+			// Haiku created a subject beside the candidate repository of the same name. A person may share a tool's
+			// name, so a subject of that name still wins, and a repository is reused only when shown to the model.
+			key := subjects.Normalize(s.name)
+			repo, ok := e.repos[key]
+			if ok {
+				found, err := subjects.FindByTerm(r.q, s.name)
+				if err != nil {
+					return err
+				}
+				ok = !slices.ContainsFunc(found, func(f subjects.Subject) bool {
+					return f.Kind == "subject" && subjects.Normalize(f.Name) == key
+				})
+			}
+			if ok {
 				uid, err = r.resolve(repo)
 			} else {
 				uid, err = subjects.Create(r.q, s.name, s.aliases, nil)
