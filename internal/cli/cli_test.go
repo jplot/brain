@@ -650,7 +650,7 @@ func TestLogNeverOnStderr(t *testing.T) {
 	stdLogTo(&stray, t)
 	code, out, errOut := f.run("index")
 	if code != 1 || strings.Contains(out+errOut, "indexing failed") || stray.Len() != 0 || errOut != "" && !strings.HasPrefix(errOut, "paul: index failed: see paul.log") {
-		t.Fatalf("journal hors de paul.log : code %d\n%s%s\n%s", code, out, errOut, stray.String())
+		t.Fatalf("journal outside paul.log : code %d\n%s%s\n%s", code, out, errOut, stray.String())
 	}
 	raw, err := os.ReadFile(f.p.Log())
 	if err != nil || !strings.Contains(string(raw), "indexing failed") {
