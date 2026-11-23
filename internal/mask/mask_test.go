@@ -17,75 +17,75 @@ const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl"
 func rep(s string, n int) string { return strings.Repeat(s, n) }
 
 func TestMarkerValue(t *testing.T) {
-	if mask.Marker != "[secret masqué]" {
+	if mask.Marker != "[masked secret]" {
 		t.Fatalf("Marker = %q", mask.Marker)
 	}
 }
 
 func TestMasks(t *testing.T) {
 	cases := []struct{ raw, want string }{
-		{"clé ghp_" + rep("a", 36) + " fin", "clé [secret masqué] fin"},
-		{"Authorization: Bearer abcdefghijklmnop1234", "Authorization: Bearer [secret masqué]"},
-		{"postgres://moi:motdepasse99@hote/base", "postgres://moi:[secret masqué]@hote/base"},
-		{"API_TOKEN=abcdef123456789", "API_TOKEN=[secret masqué]"},
-		{`"password": "hunter2hunter2"`, `"password": "[secret masqué]"`},
-		{"sk-ant-" + rep("x", 30), "[secret masqué]"},
-		{"AKIA" + "A1B2C3D4E5F6G7H8", "[secret masqué]"},
-		{"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl", "[secret masqué]"},
-		{"Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl", "Bearer [secret masqué]"},
-		{"token=ghp_" + rep("b", 36), "token=[secret masqué]"},
-		{"redis://:motdepasse99@hote:6379/0", "redis://:[secret masqué]@hote:6379/0"},
-		{"postgres://moi:mot/de/passe99@hote/base", "postgres://moi:[secret masqué]@hote/base"},
-		{"postgres://moi:p@ssw0rd99@hote/base", "postgres://moi:[secret masqué]@hote/base"},
-		{`{"password": "Tr0ub4dor&3xyzabc"}`, `{"password": "[secret masqué]"}`},
-		{`{"password": "abc,def;ghi)jkl"}`, `{"password": "[secret masqué]"}`},
-		{`password: "correct horse battery"`, `password: "[secret masqué]"`},
-		{`export DB_PASSWORD="correct horse battery staple"`, `export DB_PASSWORD="[secret masqué]"`},
-		{"password=Pa$$w0rd,2024!xx", "password=[secret masqué]"},
-		{"password=abcdefghijklmn,opqrst", "password=[secret masqué]"},
-		{"password: `hunter2hunter2`", "password: `[secret masqué]`"},
-		{"Le token : `abcdefghijklmnop1234`", "Le token : `[secret masqué]`"},
-		{"**password**: hunter2hunter2", "**password**: [secret masqué]"},
-		{"**Token** : abcdefghijklmnop1234", "**Token** : [secret masqué]"},
-		{`:password => "hunter2hunter2"`, `:password => "[secret masqué]"`},
-		{":api_key => 'abcdefghijklmnop1234'", ":api_key => '[secret masqué]'"},
-		{`{\"password\": \"hunter2hunter2\"}`, `{\"password\": \"[secret masqué]\"}`},
-		{`curl -d "{\"password\":\"hunter2hunter2\"}" https://x`, `curl -d "{\"password\":\"[secret masqué]\"}" https://x`},
-		{`printf 'x\n` + "ghp_" + rep("h", 36) + `\n'`, `printf 'x\n[secret masqué]\n'`},
-		{`"a\n` + jwt + `"`, `"a\n[secret masqué]"`},
-		{`"a\nBearer abcdefghijklmnop1234"`, `"a\nBearer [secret masqué]"`},
-		{`"\tAKIA` + "IOSFODNN7EXAMPLE" + `"`, `"\t[secret masqué]"`},
-		{"token%3Dghp_" + rep("i", 36), "token%3D[secret masqué]"},
-		{"x-api-key: abcdefghijklmnop1234", "x-api-key: [secret masqué]"},
-		{`curl -H "X-Api-Key: abcdefghijklmnop1234"`, `curl -H "X-Api-Key: [secret masqué]"`},
-		{"api-key: abcdefghijklmnop1234", "api-key: [secret masqué]"},
-		{"mot_de_passe=hunter2hunter2", "mot_de_passe=[secret masqué]"},
-		{"motdepasse: hunter2hunter2", "motdepasse: [secret masqué]"},
-		{"DB_PASS=hunter2hunter2", "DB_PASS=[secret masqué]"},
-		{"MYSQL_PWD=hunter2hunter2", "MYSQL_PWD=[secret masqué]"},
-		{"passphrase: hunter2hunter2", "passphrase: [secret masqué]"},
-		{"--token abcdefghijklmnop1234", "--token [secret masqué]"},
-		{"--password hunter2hunter2", "--password [secret masqué]"},
-		{"curl -u mon-compte:motdepasse99 https://x", "curl -u mon-compte:[secret masqué] https://x"},
-		{"Authorization: Basic dXNlcjpwYXNzd29yZDEyMw==", "Authorization: Basic [secret masqué]"},
-		{"Authorization: token " + rep("0123456789abcdef", 2) + "01234567", "Authorization: token [secret masqué]"},
-		{"Authorization: ApiKey abcdefghijklmnop1234", "Authorization: ApiKey [secret masqué]"},
-		{"ASIA" + "IOSFODNN7EXAMPLE", "[secret masqué]"},
-		{"xapp-1-A0123456789-abcdefghij", "[secret masqué]"},
-		{"sk_test_" + rep("a", 24), "[secret masqué]"},
-		{"whsec_" + rep("a", 24), "[secret masqué]"},
-		{"-----BEGIN PGP PRIVATE KEY BLOCK-----\nabc\n-----END PGP PRIVATE KEY BLOCK-----", "[secret masqué]"},
-		{"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0", "[secret masqué]"},
-		{"-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0B\n", "-----BEGIN PRIVATE KEY-----\n[secret masqué]\n"},
-		{"DB_SECRET_URL=redis://u:motdepasse99@h:6379", "DB_SECRET_URL=redis://u:[secret masqué]@h:6379"},
-		{"token=abcde-ghp_" + rep("j", 36), "token=abcde-[secret masqué]"},
-		{"ghp_" + rep("Q", 30) + "ghp_" + rep("R", 30), "[secret masqué]"},
-		{"AKIA" + rep("Q", 16) + "ghp_" + rep("R", 36), "[secret masqué]"},
-		{"token=abc123.def456", "token=[secret masqué]"},
-		{"token=abc123def456.ghi789jkl012", "token=[secret masqué]"},
-		{"password=Hunter2.Hunter2xx", "password=[secret masqué]"},
-		{"token=eyJhbGciOiJIUzI1NiJ9.abc", "token=[secret masqué]"},
-		{"api_token=" + rep("Q", 14) + ".Bearer " + rep("Q", 20), "api_token=[secret masqué] [secret masqué]"},
+		{"clé ghp_" + rep("a", 36) + " fin", "clé [masked secret] fin"},
+		{"Authorization: Bearer abcdefghijklmnop1234", "Authorization: Bearer [masked secret]"},
+		{"postgres://moi:motdepasse99@hote/base", "postgres://moi:[masked secret]@hote/base"},
+		{"API_TOKEN=abcdef123456789", "API_TOKEN=[masked secret]"},
+		{`"password": "hunter2hunter2"`, `"password": "[masked secret]"`},
+		{"sk-ant-" + rep("x", 30), "[masked secret]"},
+		{"AKIA" + "A1B2C3D4E5F6G7H8", "[masked secret]"},
+		{"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl", "[masked secret]"},
+		{"Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJl", "Bearer [masked secret]"},
+		{"token=ghp_" + rep("b", 36), "token=[masked secret]"},
+		{"redis://:motdepasse99@hote:6379/0", "redis://:[masked secret]@hote:6379/0"},
+		{"postgres://moi:mot/de/passe99@hote/base", "postgres://moi:[masked secret]@hote/base"},
+		{"postgres://moi:p@ssw0rd99@hote/base", "postgres://moi:[masked secret]@hote/base"},
+		{`{"password": "Tr0ub4dor&3xyzabc"}`, `{"password": "[masked secret]"}`},
+		{`{"password": "abc,def;ghi)jkl"}`, `{"password": "[masked secret]"}`},
+		{`password: "correct horse battery"`, `password: "[masked secret]"`},
+		{`export DB_PASSWORD="correct horse battery staple"`, `export DB_PASSWORD="[masked secret]"`},
+		{"password=Pa$$w0rd,2024!xx", "password=[masked secret]"},
+		{"password=abcdefghijklmn,opqrst", "password=[masked secret]"},
+		{"password: `hunter2hunter2`", "password: `[masked secret]`"},
+		{"Le token : `abcdefghijklmnop1234`", "Le token : `[masked secret]`"},
+		{"**password**: hunter2hunter2", "**password**: [masked secret]"},
+		{"**Token** : abcdefghijklmnop1234", "**Token** : [masked secret]"},
+		{`:password => "hunter2hunter2"`, `:password => "[masked secret]"`},
+		{":api_key => 'abcdefghijklmnop1234'", ":api_key => '[masked secret]'"},
+		{`{\"password\": \"hunter2hunter2\"}`, `{\"password\": \"[masked secret]\"}`},
+		{`curl -d "{\"password\":\"hunter2hunter2\"}" https://x`, `curl -d "{\"password\":\"[masked secret]\"}" https://x`},
+		{`printf 'x\n` + "ghp_" + rep("h", 36) + `\n'`, `printf 'x\n[masked secret]\n'`},
+		{`"a\n` + jwt + `"`, `"a\n[masked secret]"`},
+		{`"a\nBearer abcdefghijklmnop1234"`, `"a\nBearer [masked secret]"`},
+		{`"\tAKIA` + "IOSFODNN7EXAMPLE" + `"`, `"\t[masked secret]"`},
+		{"token%3Dghp_" + rep("i", 36), "token%3D[masked secret]"},
+		{"x-api-key: abcdefghijklmnop1234", "x-api-key: [masked secret]"},
+		{`curl -H "X-Api-Key: abcdefghijklmnop1234"`, `curl -H "X-Api-Key: [masked secret]"`},
+		{"api-key: abcdefghijklmnop1234", "api-key: [masked secret]"},
+		{"mot_de_passe=hunter2hunter2", "mot_de_passe=[masked secret]"},
+		{"motdepasse: hunter2hunter2", "motdepasse: [masked secret]"},
+		{"DB_PASS=hunter2hunter2", "DB_PASS=[masked secret]"},
+		{"MYSQL_PWD=hunter2hunter2", "MYSQL_PWD=[masked secret]"},
+		{"passphrase: hunter2hunter2", "passphrase: [masked secret]"},
+		{"--token abcdefghijklmnop1234", "--token [masked secret]"},
+		{"--password hunter2hunter2", "--password [masked secret]"},
+		{"curl -u mon-compte:motdepasse99 https://x", "curl -u mon-compte:[masked secret] https://x"},
+		{"Authorization: Basic dXNlcjpwYXNzd29yZDEyMw==", "Authorization: Basic [masked secret]"},
+		{"Authorization: token " + rep("0123456789abcdef", 2) + "01234567", "Authorization: token [masked secret]"},
+		{"Authorization: ApiKey abcdefghijklmnop1234", "Authorization: ApiKey [masked secret]"},
+		{"ASIA" + "IOSFODNN7EXAMPLE", "[masked secret]"},
+		{"xapp-1-A0123456789-abcdefghij", "[masked secret]"},
+		{"sk_test_" + rep("a", 24), "[masked secret]"},
+		{"whsec_" + rep("a", 24), "[masked secret]"},
+		{"-----BEGIN PGP PRIVATE KEY BLOCK-----\nabc\n-----END PGP PRIVATE KEY BLOCK-----", "[masked secret]"},
+		{"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0", "[masked secret]"},
+		{"-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0B\n", "-----BEGIN PRIVATE KEY-----\n[masked secret]\n"},
+		{"DB_SECRET_URL=redis://u:motdepasse99@h:6379", "DB_SECRET_URL=redis://u:[masked secret]@h:6379"},
+		{"token=abcde-ghp_" + rep("j", 36), "token=abcde-[masked secret]"},
+		{"ghp_" + rep("Q", 30) + "ghp_" + rep("R", 30), "[masked secret]"},
+		{"AKIA" + rep("Q", 16) + "ghp_" + rep("R", 36), "[masked secret]"},
+		{"token=abc123.def456", "token=[masked secret]"},
+		{"token=abc123def456.ghi789jkl012", "token=[masked secret]"},
+		{"password=Hunter2.Hunter2xx", "password=[masked secret]"},
+		{"token=eyJhbGciOiJIUzI1NiJ9.abc", "token=[masked secret]"},
+		{"api_token=" + rep("Q", 14) + ".Bearer " + rep("Q", 20), "api_token=[masked secret] [masked secret]"},
 	}
 	for _, c := range cases {
 		t.Run(c.raw, func(t *testing.T) {
@@ -136,7 +136,7 @@ func TestLeavesAlone(t *testing.T) {
 
 func TestWholePEMBlock(t *testing.T) {
 	pem := "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\nabcdef\n-----END RSA PRIVATE KEY-----"
-	if got := mask.Text("avant\n" + pem + "\naprès"); got != "avant\n[secret masqué]\naprès" {
+	if got := mask.Text("avant\n" + pem + "\naprès"); got != "avant\n[masked secret]\naprès" {
 		t.Errorf("got %q", got)
 	}
 }
@@ -297,7 +297,7 @@ func TestGluedFragmentsLeaveNoDebrisNorDoubleMarker(t *testing.T) {
 		if strings.Contains(masked, marker+marker) {
 			t.Fatalf("double marker: %q", text)
 		}
-		if strings.Contains(strings.ReplaceAll(masked, marker, ""), "masqué]") {
+		if strings.Contains(strings.ReplaceAll(masked, marker, ""), "masked]") {
 			t.Fatalf("debris: %q -> %q", text, masked)
 		}
 		if strings.Contains(masked, "QQQQ") {

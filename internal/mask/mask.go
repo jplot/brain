@@ -12,7 +12,7 @@ import (
 	"github.com/dlclark/regexp2"
 )
 
-const Marker = "[secret masqué]"
+const Marker = "[masked secret]"
 
 // budgetFor bounds one Text call; text not examined in time becomes Marker (lost, never leaked).
 // It grows with the input: 1 MiB of letters takes 0.33 s on an Apple M5 Pro but passed a flat

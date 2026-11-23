@@ -1010,7 +1010,7 @@ func TestCorrection(t *testing.T) {
 	secret := "ghp_" + strings.Repeat("A1", 15)
 	f.status(t, f.post("/api/points/correct", obj{"id": w.open, "text": "clé " + secret + " ici"}), 200)
 	shown := string(f.get("/api/points").body)
-	if strings.Contains(shown, secret) || !strings.Contains(shown, "[secret masqué]") {
+	if strings.Contains(shown, secret) || !strings.Contains(shown, "[masked secret]") {
 		t.Fatal(shown)
 	}
 }
@@ -1343,7 +1343,7 @@ func TestRenameMasksSecrets(t *testing.T) {
 	w := f.indexed()
 	secret := "ghp_" + strings.Repeat("A1", 15)
 	f.status(t, f.post("/api/subjects/rename", obj{"uid": w.a, "name": "clé " + secret}), 200)
-	if s, _ := subjects.Get(f.conn, w.a); strings.Contains(s.Name, secret) || !strings.Contains(s.Name, "[secret masqué]") {
+	if s, _ := subjects.Get(f.conn, w.a); strings.Contains(s.Name, secret) || !strings.Contains(s.Name, "[masked secret]") {
 		t.Fatal(s.Name)
 	}
 }

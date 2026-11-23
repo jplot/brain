@@ -553,7 +553,7 @@ func TestCorrectionMasksASecret(t *testing.T) {
 	pg.press("Équipe de six", "Corriger")
 	pg.fill(`.edit-field input`, "clé "+secret)
 	pg.press("", "Terminer")
-	pg.has("article", "[secret masqué]")
+	pg.has("article", "[masked secret]")
 	pg.lacks("body", secret)
 }
 
