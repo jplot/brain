@@ -61,6 +61,30 @@ func Run(p paths.Paths) (Stats, error) {
 	return All(conn, p), nil
 }
 
+func Rebuild(p paths.Paths) (Stats, error) {
+	if err := p.EnsureHome(); err != nil {
+		return Stats{}, err
+	}
+	release, _, err := lock.Writer(p.IndexLock(), true)
+	if err != nil {
+		return Stats{}, err
+	}
+	defer release()
+	conn, err := db.Open(p, busyTimeout)
+	if err != nil {
+		return Stats{}, err
+	}
+	defer conn.Close()
+	if err := db.RebuildIndex(conn); err != nil {
+		return Stats{}, err
+	}
+	if err := subjects.RebuildTerms(conn); err != nil {
+		return Stats{}, err
+	}
+	stats := All(conn, p)
+	return stats, finishUpgrade(conn)
+}
+
 // Refresh does nothing while another process indexes: that one is already doing the work.
 func Refresh(conn *sql.DB, p paths.Paths) error {
 	if err := p.EnsureHome(); err != nil {
