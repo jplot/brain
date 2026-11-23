@@ -17,6 +17,7 @@ import (
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/index"
 	"github.com/jplot/brain/internal/lock"
+	"github.com/jplot/brain/internal/mask"
 	"github.com/jplot/brain/internal/memo"
 	"github.com/jplot/brain/internal/memory"
 	"github.com/jplot/brain/internal/search"
@@ -641,7 +642,7 @@ func rename(s *server, r *request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	name := flat(v[1])
+	name := flat(mask.Text(v[1]))
 	if name == "" {
 		return nil, fail(http.StatusBadRequest, "name manquant ou invalide")
 	}

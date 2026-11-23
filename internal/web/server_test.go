@@ -1338,6 +1338,16 @@ func TestRenameSubject(t *testing.T) {
 	f.status(t, f.post("/api/subjects/rename", obj{"uid": w.a, "name": "GAMMA rayon"}), 200)
 }
 
+func TestRenameMasksSecrets(t *testing.T) {
+	f := newFixture(t)
+	w := f.indexed()
+	secret := "ghp_" + strings.Repeat("A1", 15)
+	f.status(t, f.post("/api/subjects/rename", obj{"uid": w.a, "name": "clé " + secret}), 200)
+	if s, _ := subjects.Get(f.conn, w.a); strings.Contains(s.Name, secret) || !strings.Contains(s.Name, "[secret masqué]") {
+		t.Fatal(s.Name)
+	}
+}
+
 func TestRenameLeavesReposOutOfTheNameCheck(t *testing.T) {
 	f := newFixture(t)
 	w := f.indexed()
