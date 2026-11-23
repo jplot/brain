@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"syscall"
 	"time"
 
@@ -47,24 +48,21 @@ func Run(event string, p paths.Paths, stdin io.Reader, stdout io.Writer) int {
 		}
 		if in.Source == "startup" || in.Source == "clear" {
 			emit(stdout, "SessionStart", startBudget, func() (string, func() error, error) {
-				text, err := withDB(p, func(d *sql.DB) (string, error) {
-					return memo.Start(d, cwdOrCurrent(in.Cwd), in.SessionID, time.Now())
+				inj, err := withDB(p, func(d *sql.DB) (memo.Injection, error) {
+					return memo.PlanStart(d, cwdOrCurrent(in.Cwd), in.SessionID, time.Now())
 				})
-				return text, nil, err
+				return inj.Text, recorder(p, inj), err
 			})
 		}
 	case "prompt":
 		if in.SessionID != "" && in.Prompt != "" {
 			emit(stdout, "UserPromptSubmit", promptBudget, func() (string, func() error, error) {
 				inj, err := withDB(p, func(d *sql.DB) (memo.Injection, error) { return memo.Plan(d, in.SessionID, in.Prompt) })
-				return inj.Text, func() error {
-					_, err := withDB(p, func(d *sql.DB) (struct{}, error) { return struct{}{}, inj.Record(d, time.Now()) })
-					return err
-				}, err
+				return inj.Text, recorder(p, inj), err
 			})
 		}
 	case "end":
-		if _, err := os.Stat(in.TranscriptPath); in.SessionID != "" && in.TranscriptPath != "" && err == nil {
+		if info, err := os.Stat(in.TranscriptPath); in.SessionID != "" && err == nil && info.Mode().IsRegular() {
 			detach(summarizeArgs(in.SessionID))
 		} else {
 			detach([]string{"index"})
@@ -91,6 +89,13 @@ func cwdOrCurrent(cwd string) string {
 	}
 	wd, _ := os.Getwd()
 	return wd
+}
+
+func recorder(p paths.Paths, inj memo.Injection) func() error {
+	return func() error {
+		_, err := withDB(p, func(d *sql.DB) (struct{}, error) { return struct{}{}, inj.Record(d, time.Now()) })
+		return err
+	}
 }
 
 func readPayload(r io.Reader) payload {
@@ -169,6 +174,9 @@ func emit(stdout io.Writer, name string, budget time.Duration, work func() (stri
 		if r.text == "" {
 			return
 		}
+		// Only now: children are spawned by then and must not inherit an ignored SIGPIPE.
+		// A closed stdout then gives EPIPE instead of killing the hook.
+		signal.Ignore(syscall.SIGPIPE)
 		var out bytes.Buffer
 		enc := json.NewEncoder(&out)
 		enc.SetEscapeHTML(false)

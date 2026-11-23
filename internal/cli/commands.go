@@ -4,11 +4,9 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"os/signal"
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/jplot/brain/internal/hook"
@@ -571,8 +569,6 @@ func hookCmd(e *env, args []string) (int, error) {
 	if len(args) != 1 {
 		return 0, usagef("hook : attendu start, prompt ou end")
 	}
-	// A closed stdout must give EPIPE, not kill the hook with SIGPIPE.
-	signal.Ignore(syscall.SIGPIPE)
 	hook.Version = Version
 	return hook.Run(args[0], e.p, os.Stdin, e.out), nil
 }

@@ -1,10 +1,11 @@
 package hook
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
 
 	"github.com/jplot/brain/internal/paths"
 )
@@ -42,12 +43,15 @@ func LinkCommand(p paths.Paths, version string) error {
 	if err != nil {
 		return err
 	}
+	var failed error
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "paul-") && e.Name() != current {
+		if e.Type().IsRegular() && e.Name() != current && installed.MatchString(e.Name()) {
 			if err := os.Remove(filepath.Join(p.Bin(), e.Name())); err != nil {
-				return err
+				failed = errors.Join(failed, err)
 			}
 		}
 	}
-	return nil
+	return failed
 }
+
+var installed = regexp.MustCompile(`^paul-\d+\.\d+\.\d+$`)

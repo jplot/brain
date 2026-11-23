@@ -328,6 +328,30 @@ func TestPlanRecordsNothingUntilRecord(t *testing.T) {
 	}
 }
 
+func TestPlanStartRecordsNothingUntilRecord(t *testing.T) {
+	f := newFixture(t)
+	repo, err := subjects.EnsureRepo(f.db, "example/widget", "widget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pt := f.point(repo, "decision", "Use sqlite for storage", 4, false)
+	f.exec("INSERT INTO repo_cache VALUES ('/work/widget', ?, 't')", repo)
+	in, err := PlanStart(f.db, "/work/widget", "sess", now)
+	if err != nil || !strings.Contains(in.Text, "Use sqlite") {
+		t.Fatalf("%v\n%s", err, in.Text)
+	}
+	count := func(q string) (n int) { f.db.QueryRow(q).Scan(&n); return }
+	if count("SELECT count(*) FROM injected")+count("SELECT count(*) FROM point_usage") != 0 {
+		t.Fatal("PlanStart wrote")
+	}
+	if err := in.Record(f.db, now); err != nil {
+		t.Fatal(err)
+	}
+	if count("SELECT count(*) FROM injected WHERE subject_uid = '"+repo+"'") != 1 || count("SELECT count(*) FROM point_usage WHERE uid = '"+pt+"'") != 1 {
+		t.Fatal("Record did not write")
+	}
+}
+
 func TestInjectOncePerSession(t *testing.T) {
 	f := newFixture(t)
 	f.subject("Billing")

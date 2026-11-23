@@ -27,7 +27,7 @@ func TestMain(m *testing.M) {
 	if event := os.Getenv(helperEnv); event != "" {
 		p := paths.Paths{Home: os.Getenv("PAUL_HOME"), Transcripts: os.Getenv("PAUL_TRANSCRIPTS")}
 		executable = func() (string, error) { return os.Getenv("PAUL_HOOK_TEST_EXE"), nil }
-		os.Exit(Run(event, p, os.Stdin, io.Discard))
+		os.Exit(Run(event, p, os.Stdin, os.Stdout))
 	}
 	os.Exit(m.Run())
 }
@@ -45,7 +45,7 @@ func newFixture(t *testing.T) *fixture {
 	dir := t.TempDir()
 	f := &fixture{t: t, p: paths.Paths{Home: filepath.Join(dir, "home"), Transcripts: filepath.Join(dir, "t")}, rec: filepath.Join(dir, "rec"), logs: &bytes.Buffer{}}
 	exe := filepath.Join(dir, "fake-paul")
-	script := "#!/bin/sh\necho \"$$ $(ps -o pgid= -p $$ | tr -d ' ') $*\" >> \"$PAUL_HOOK_TEST_REC\"\nif [ -n \"$PAUL_HOOK_TEST_DONE\" ]; then sleep 1; echo done > \"$PAUL_HOOK_TEST_DONE\"; fi\n"
+	script := "#!/bin/sh\necho \"$$ $(ps -o pgid= -p $$ | tr -d ' ') $*\" >> \"$PAUL_HOOK_TEST_REC\"\nif [ -n \"$PAUL_HOOK_TEST_PIPE\" ]; then kill -PIPE $$; echo survived >> \"$PAUL_HOOK_TEST_PIPE\"; fi\nif [ -n \"$PAUL_HOOK_TEST_DONE\" ]; then sleep 1; echo done > \"$PAUL_HOOK_TEST_DONE\"; fi\n"
 	if err := os.WriteFile(exe, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -484,5 +484,84 @@ func TestHookPromptRecordsNothingWhenTheRecordIsBlocked(t *testing.T) {
 	d.QueryRow("SELECT count(*) FROM injected WHERE session_id = 's1' AND subject_uid = ?", uid).Scan(&n)
 	if n != 0 || took > 400*time.Millisecond || !strings.Contains(f.logs.String(), "enregistrement") {
 		t.Fatalf("rows %d after %v, log %q", n, took, f.logs.String())
+	}
+}
+
+func repoFixture(t *testing.T, f *fixture) (repo, point string) {
+	t.Helper()
+	d := f.db()
+	repo, err := subjects.EnsureRepo(d, "example/widget", "widget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.session("s0", "Autre", "2026-11-10T10:00:00.000Z")
+	point = "p1"
+	for _, q := range []string{
+		"INSERT INTO points(uid, episode_id, kind, subject_uid, text, importance, source_ts, created_at, updated_at) VALUES ('p1', 1, 'decision', '" + repo + "', 'Use sqlite for storage', 4, 't', 't', 't')",
+		"INSERT INTO repo_cache VALUES ('/work/widget', '" + repo + "', 't')",
+	} {
+		if _, err := d.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return repo, point
+}
+
+func TestHookStartRecordsAfterWriting(t *testing.T) {
+	f := newFixture(t)
+	repo, point := repoFixture(t, f)
+	out, _ := f.run("start", `{"source":"startup","cwd":"/work/widget","session_id":"new"}`)
+	var injected, used int
+	f.db().QueryRow("SELECT count(*) FROM injected WHERE session_id = 'new' AND subject_uid = ?", repo).Scan(&injected)
+	f.db().QueryRow("SELECT count(*) FROM point_usage WHERE uid = ?", point).Scan(&used)
+	if !strings.Contains(out, "Use sqlite") || injected != 1 || used != 1 {
+		t.Fatalf("injected %d, used %d\n%s", injected, used, out)
+	}
+}
+
+func TestHookStartRecordsNothingWhenTheRecordIsBlocked(t *testing.T) {
+	f := newFixture(t)
+	repoFixture(t, f)
+	d := f.db()
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("INSERT INTO injected(session_id, subject_uid) VALUES ('other', 'x')"); err != nil {
+		t.Fatal(err)
+	}
+	f.run("start", `{"source":"startup","cwd":"/work/widget","session_id":"new"}`)
+	tx.Rollback()
+	var n int
+	d.QueryRow("SELECT (SELECT count(*) FROM injected WHERE session_id = 'new') + (SELECT count(*) FROM point_usage)").Scan(&n)
+	if n != 0 || !strings.Contains(f.logs.String(), "enregistrement") {
+		t.Fatalf("rows %d, log %q", n, f.logs.String())
+	}
+}
+
+func TestHookEndIndexesWhenTranscriptIsADirectory(t *testing.T) {
+	f := newFixture(t)
+	f.run("end", payloadJSON(t, map[string]any{"session_id": "abc", "transcript_path": t.TempDir()}))
+	if got := f.spawned(); len(got) != 1 || got[0] != "index" {
+		t.Fatalf("spawned %q", got)
+	}
+}
+
+func TestHookChildrenKeepTheDefaultSigpipe(t *testing.T) {
+	f := newFixture(t)
+	f.session("s1", "Facturation", "2026-11-10T10:00:00.000Z")
+	marker := filepath.Join(t.TempDir(), "survived")
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), helperEnv+"=start", "PAUL_HOOK_TEST_PIPE="+marker)
+	cmd.Stdin = strings.NewReader(`{"source":"startup","cwd":"/nowhere"}`)
+	out, err := cmd.Output()
+	if err != nil || !strings.Contains(string(out), "Facturation") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	f.spawned()
+	time.Sleep(300 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the child inherited an ignored SIGPIPE")
 	}
 }

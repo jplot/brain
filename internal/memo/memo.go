@@ -108,40 +108,47 @@ func sessionLine(s search.SessionRow, withSubjects bool) string {
 }
 
 func Start(q db.Querier, cwd, sessionID string, now time.Time) (string, error) {
+	in, err := PlanStart(q, cwd, sessionID, now)
+	if err != nil {
+		return "", err
+	}
+	return in.Text, in.Record(q, now)
+}
+
+// PlanStart only reads: nothing counts as shown until Record.
+func PlanStart(q db.Querier, cwd, sessionID string, now time.Time) (Injection, error) {
 	return start(q, cwd, sessionID, now, true)
 }
 
 // Preview is the start memo for a reader, not for Claude: showing it is not a use of its points.
 func Preview(q db.Querier, cwd string, now time.Time) (string, error) {
-	return start(q, cwd, "", now, false)
+	in, err := start(q, cwd, "", now, false)
+	return in.Text, err
 }
 
-func start(q db.Querier, cwd, sessionID string, now time.Time, mark bool) (string, error) {
+func start(q db.Querier, cwd, sessionID string, now time.Time, mark bool) (Injection, error) {
+	in := Injection{sessionID: sessionID}
 	var body []string
 	uid, err := repoSubject(q, cwd)
 	if err != nil {
-		return "", err
+		return in, err
 	}
 	if uid != "" {
 		text, used, err := index(q, uid, nil, now)
 		if err != nil {
-			return "", err
+			return in, err
 		}
 		if mark {
-			if err := memory.MarkUsed(q, used, now); err != nil {
-				return "", err
-			}
+			in.used = used
 		}
 		if sessionID != "" {
-			if _, err := q.ExecContext(background, "INSERT OR IGNORE INTO injected(session_id, subject_uid) VALUES (?, ?)", sessionID, uid); err != nil {
-				return "", err
-			}
+			in.keys = []string{uid}
 		}
 		body = []string{text}
 	} else {
 		sessions, err := lastSessions(q, "", 3)
 		if err != nil {
-			return "", err
+			return in, err
 		}
 		for _, s := range sessions {
 			body = append(body, sessionLine(s, true))
@@ -151,9 +158,10 @@ func start(q db.Querier, cwd, sessionID string, now time.Time, mark bool) (strin
 		}
 	}
 	if len(body) == 0 {
-		return "", nil
+		return in, nil
 	}
-	return strings.Join(append(append([]string{preamble, today(now)}, body...), footer), "\n"), nil
+	in.Text = strings.Join(append(append([]string{preamble, today(now)}, body...), footer), "\n")
+	return in, nil
 }
 
 type slot struct {

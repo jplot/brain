@@ -2,6 +2,7 @@ package hook
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -135,5 +136,41 @@ func TestLinkCommandWaitsForTheBinary(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(p.Bin(), "paul-0.9.0")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLinkCommandCleanupOnlyRemovesInstalledVersions(t *testing.T) {
+	p, _ := linkFixture(t)
+	installVersion(t, p, "1.0.0")
+	installVersion(t, p, "0.9.0")
+	installVersion(t, p, "0.9.1.part")
+	if err := os.Mkdir(filepath.Join(p.Bin(), "paul-0.8.0"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := LinkCommand(p, "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	for name, kept := range map[string]bool{"paul-1.0.0": true, "paul-0.9.1.part": true, "paul-0.8.0": true, "paul-0.9.0": false} {
+		if _, err := os.Lstat(filepath.Join(p.Bin(), name)); (err == nil) != kept {
+			t.Fatalf("%s: kept %v, err %v", name, kept, err)
+		}
+	}
+}
+
+func TestLinkCommandCleanupContinuesAfterAFailure(t *testing.T) {
+	p, _ := linkFixture(t)
+	installVersion(t, p, "1.0.0")
+	installVersion(t, p, "0.8.0")
+	installVersion(t, p, "0.9.0")
+	stuck := filepath.Join(p.Bin(), "paul-0.8.0")
+	if err := exec.Command("chflags", "uchg", stuck).Run(); err != nil {
+		t.Skip("no immutable flag on this system")
+	}
+	defer exec.Command("chflags", "nouchg", stuck).Run()
+	if err := LinkCommand(p, "1.0.0"); err == nil {
+		t.Fatal("no error")
+	}
+	if _, err := os.Stat(filepath.Join(p.Bin(), "paul-0.9.0")); !os.IsNotExist(err) {
+		t.Fatalf("cleanup stopped at the first failure: %v", err)
 	}
 }
