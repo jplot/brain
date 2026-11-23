@@ -567,6 +567,7 @@ func TestOldCommandsAreUnknown(t *testing.T) {
 func TestNotYetAvailableCommands(t *testing.T) {
 	f := newFixture(t)
 	contains(t, f.fails(2, "sync"), "pas encore disponible")
+	contains(t, f.ok("--help"), "  sync                          pas encore disponible\n")
 }
 
 func TestMigrateRefusals(t *testing.T) {

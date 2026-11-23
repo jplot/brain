@@ -46,7 +46,7 @@ Usage : paul <commande> [options]
   web                           --no-open
   hook start|prompt|end
   migrate                       --from --root
-  sync                          --new-key
+  sync                          pas encore disponible
 `
 )
 
