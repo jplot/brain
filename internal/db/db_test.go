@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -283,5 +284,17 @@ func TestConcurrentWritersRealProcesses(t *testing.T) {
 	}
 	if n := count(t, d, "SELECT count(*) FROM messages"); n != writers*perWriter {
 		t.Fatalf("got %d rows, want %d", n, writers*perWriter)
+	}
+}
+
+func TestPointsBySubjectIndexed(t *testing.T) {
+	d := open(t)
+	var id, parent, unused int
+	var plan string
+	if err := d.QueryRow("EXPLAIN QUERY PLAN SELECT id FROM points WHERE subject_uid = 'x'").Scan(&id, &parent, &unused, &plan); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plan, "INDEX points_subject") {
+		t.Fatal(plan)
 	}
 }

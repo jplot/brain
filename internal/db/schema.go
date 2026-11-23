@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS points(
     corrected INTEGER NOT NULL DEFAULT 0,
     uid TEXT NOT NULL UNIQUE, updated_at TEXT NOT NULL,
     superseded_by_uid TEXT, superseded_at TEXT);
+CREATE INDEX IF NOT EXISTS points_subject ON points(subject_uid);
 CREATE VIRTUAL TABLE IF NOT EXISTS points_fts USING fts5(
     text, content='points', content_rowid='id',
     tokenize='unicode61 remove_diacritics 2');

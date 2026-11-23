@@ -421,8 +421,8 @@ func runes(s string) int { return utf8.RuneCountInString(s) }
 
 func TestBounds(t *testing.T) {
 	got := []any{ChunkChars, Timeout, Quiet, HintsWait, Retry, MaxFailures, MaxChunks, MaxCandidates, MaxOpenPoints,
-		MaxCurrentPoints}
-	want := []any{60000, 300 * time.Second, 30 * time.Minute, 24 * time.Hour, time.Hour, 3, 100, 60, 30, 30}
+		MaxCurrentPoints, MaxShownAliases, MaxPointChars, MaxDataChars}
+	want := []any{60000, 300 * time.Second, 30 * time.Minute, 24 * time.Hour, time.Hour, 3, 100, 60, 30, 30, 8, 300, 15000}
 	if !slices.Equal(got, want) {
 		t.Fatalf("%v", got)
 	}
@@ -1323,35 +1323,51 @@ func (f *fixture) repo(session string) string {
 	return uid
 }
 
+func (f *fixture) activity(uid, end string) {
+	f.t.Helper()
+	f.n++
+	episode := fmt.Sprint("activite-", f.n)
+	f.exec("INSERT INTO episodes(uid, session_id, start_ts, end_ts, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+		episode, episode, end, end, end, end)
+	f.exec("INSERT INTO episode_subjects(episode_uid, subject_uid) VALUES (?, ?)", episode, uid)
+}
+
+func uidsOf(list []candidate) []string {
+	var out []string
+	for _, c := range list {
+		out = append(out, c.uid)
+	}
+	return out
+}
+
 func TestCandidatesOrderAndCap(t *testing.T) {
 	f := newFixture(t)
 	repo := f.repo("s1")
 	network, wiki, net := f.subject("Réseau maison", "box"), f.subject("Wikidata"), f.subject("net")
+	optic, black := f.subject("Fibre optique du salon"), f.subject("Fibre noire")
 	if err := subjects.SetParent(f.db, network, f.home, subjects.Origin{User: true}); err != nil {
 		t.Fatal(err)
 	}
 	var fillers []string
 	for i := range 70 {
 		uid := f.subject(fmt.Sprintf("Sujet %02d", i))
-		f.exec("UPDATE subjects SET updated_at = ? WHERE uid = ?", fmt.Sprintf("2026-02-01T00:%02d:00.000Z", i), uid)
+		f.activity(uid, fmt.Sprintf("2026-02-01T00:%02d:00.000Z", i))
 		fillers = append(fillers, uid)
 	}
-	f.exec("UPDATE subjects SET updated_at = '2025-01-01T00:00:00.000Z' WHERE uid IN (?, ?, ?, ?)", repo, network, net, f.home)
-	f.exec("UPDATE subjects SET updated_at = '2025-06-01T00:00:00.000Z' WHERE uid = ?", wiki)
-	text := "J'ai changé la BOX, l'internet remarche ; la fiche wikidata."
+	f.activity(wiki, "2025-06-01T00:00:00.000Z")
+	f.activity(network, "2025-01-01T00:00:00.000Z")
+	f.activity(optic, "2024-01-01T00:00:00.000Z")
+	f.exec("UPDATE subjects SET updated_at = '2026-10-01T00:00:00.000Z' WHERE uid IN (?, ?, ?, ?)", network, net, black, f.home)
+	text := "J'ai changé la BOX, l'internet remarche ; la fiche wikidata. La fibre optique du salon, noire, et la fibre."
 	got, err := candidates(f.db, "s1", text)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{repo, wiki, network}
+	want := []string{repo, wiki, network, optic}
 	for i := 69; len(want) < MaxCandidates; i-- {
 		want = append(want, fillers[i])
 	}
-	var uids []string
-	for _, c := range got {
-		uids = append(uids, c.uid)
-	}
-	if !slices.Equal(uids, want) {
+	if uids := uidsOf(got); !slices.Equal(uids, want) {
 		t.Fatalf("%v\n%v", uids, want)
 	}
 	if c := got[2]; c.kind != "subject" || c.name != "Réseau maison" || !slices.Equal(c.aliases, []string{"box"}) || c.parent != "Maison" {
@@ -1372,36 +1388,57 @@ func TestCandidatesOrderAndCap(t *testing.T) {
 	}
 }
 
-func TestOpenPointsOfCandidatesOnly(t *testing.T) {
+func TestRecencyIsLatestEpisode(t *testing.T) {
+	f := newFixture(t)
+	touched, quiet, older := f.subject("Touché"), f.subject("Modifié"), f.subject("Ancien")
+	f.activity(touched, "2026-01-01T00:00:00.000Z")
+	f.activity(touched, "2025-01-01T00:00:00.000Z")
+	f.activity(older, "2025-12-01T00:00:00.000Z")
+	f.exec("UPDATE subjects SET updated_at = '2020-01-01T00:00:00.000Z' WHERE uid IN (?, ?)", touched, older)
+	f.exec("UPDATE subjects SET updated_at = '2099-01-01T00:00:00.000Z' WHERE uid = ?", quiet)
+	got, err := candidates(f.db, "s1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uids := uidsOf(got); !slices.Equal(uids, []string{touched, older, quiet, f.home}) {
+		t.Fatal(uids)
+	}
+}
+
+func TestOpenPointsOfCandidatesThenWithoutSubject(t *testing.T) {
 	f := newFixture(t)
 	episode := f.oldEpisode("Vieux résumé")
 	shown := f.openPoint(episode)
 	current := f.addPoint(episode, "fact", "en vigueur", 3, 0)
 	replaced := f.addPoint(episode, "fact", "remplacé", 3, 0)
 	f.exec("UPDATE points SET superseded_by_uid = 'x', superseded_at = ? WHERE id = ?", t0, replaced)
-	orphan := f.addPoint(episode, "pending", "sans sujet", 3, 0)
+	orphan := f.addPoint(episode, "pending", "sans sujet", 5, 0)
 	f.exec("UPDATE points SET subject_uid = NULL WHERE id = ?", orphan)
 	far := f.subject("Lointain")
 	hidden := f.addPoint(episode, "pending", "lointain", 3, 0)
 	f.exec("UPDATE points SET subject_uid = ? WHERE id = ?", far, hidden)
 	for i := range MaxCandidates - 1 {
-		f.subject(fmt.Sprintf("Sujet %02d", i))
+		f.activity(f.subject(fmt.Sprintf("Sujet %02d", i)), "2026-01-01T00:00:00.000Z")
 	}
-	f.exec("UPDATE subjects SET updated_at = '2025-06-01T00:00:00.000Z' WHERE uid = ?", f.home)
-	f.exec("UPDATE subjects SET updated_at = '2025-01-01T00:00:00.000Z' WHERE uid = ?", far)
+	f.activity(f.home, "2026-01-01T00:00:00.000Z")
 	f.seed("s1", greeting...)
-	m := newModel(answer())
+	m := newModel(with(answer(), "closes", ids(orphan, hidden)))
 	f.summarize("s1", m.run)
 	prompt := m.calls[0].prompt
-	for _, want := range []string{fmt.Sprintf("\n#%d À faire (sujet : %s)", shown, f.home),
-		fmt.Sprintf("\n#%d fact : en vigueur (sujet : %s)", current, f.home)} {
+	open := fmt.Sprintf("\n#%d À faire (sujet : %s)\n#%d sans sujet (sans sujet)\n", shown, f.home, orphan)
+	for _, want := range []string{open, fmt.Sprintf("\n#%d fact : en vigueur (sujet : %s)", current, f.home)} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("%q missing from %s", want, prompt)
 		}
 	}
-	for _, id := range []int64{replaced, orphan, hidden} {
+	for _, id := range []int64{replaced, hidden} {
 		if strings.Contains(prompt, fmt.Sprintf("#%d ", id)) {
 			t.Fatal(id, prompt)
+		}
+	}
+	for _, p := range f.points() {
+		if p.closedAt.Valid != (p.id == orphan) {
+			t.Fatalf("%+v", p)
 		}
 	}
 }
@@ -1636,7 +1673,8 @@ func TestMergeRenumbersNewSubjects(t *testing.T) {
 			t.Fatalf("%s: %d in %s", s, got, prompt)
 		}
 	}
-	if strings.Index(prompt, `"name":"Alpha"`) > strings.Index(prompt, `"name":"Beta"`) {
+	if !strings.Contains(prompt, "le new de chaque supersedes est le rang dans les points de son propre partiel, à partir de 0") ||
+		strings.Index(prompt, `"name":"Alpha"`) > strings.Index(prompt, `"name":"Beta"`) {
 		t.Fatal(prompt)
 	}
 	beta := f.column("SELECT uid FROM subjects WHERE name = 'Beta'")
@@ -1658,6 +1696,150 @@ func TestCandidateMergedDuringCallFollowsMerge(t *testing.T) {
 	f.summarize("s1", run)
 	if p := f.points()[0]; p.subject.String != beta {
 		t.Fatalf("%+v", p)
+	}
+}
+
+func TestNonCandidateSubjectIgnored(t *testing.T) {
+	f := newFixture(t)
+	far := f.subject("Lointain")
+	var fillers []string
+	for i := range MaxCandidates {
+		uid := f.subject(fmt.Sprintf("Sujet %02d", i))
+		f.activity(uid, "2026-01-01T00:00:00.000Z")
+		fillers = append(fillers, uid)
+	}
+	f.seed("s1", greeting...)
+	buf := captureLog(t)
+	m := newModel(with(answer(point("subject", far)), "links",
+		[]any{link(far, "about", fillers[0]), link(fillers[0], "part_of", far)},
+		"aliases", []any{map[string]any{"subject": far, "add": []any{"loin"}}}))
+	f.summarize("s1", m.run)
+	if strings.Contains(m.calls[0].prompt, far) {
+		t.Fatal("far is a candidate")
+	}
+	if p := f.points()[0]; p.subject.Valid {
+		t.Fatalf("%+v", p)
+	}
+	if n := f.count("SELECT count(*) FROM links"); n != 0 || f.parentOf(fillers[0]) != "  " || len(f.get(far).Aliases) != 0 {
+		t.Fatal(n, f.parentOf(fillers[0]), f.get(far).Aliases)
+	}
+	if !strings.Contains(buf.String(), "propositions ignorées : s1 (4)") {
+		t.Fatal(buf.String())
+	}
+}
+
+func TestThirtyCurrentPointsHiddenNeverSuperseded(t *testing.T) {
+	f := newFixture(t)
+	episode := f.oldEpisode("Vieux résumé")
+	var facts []int64
+	for i := range MaxCurrentPoints + 1 {
+		facts = append(facts, f.addPoint(episode, "fact", fmt.Sprint("fait-", i), 3, 0))
+	}
+	hidden, shown := facts[0], facts[1]
+	f.seed("s1", greeting...)
+	m := newModel(with(answer(point("text", "nouveau", "subject", f.home), point("text", "autre", "subject", f.home)),
+		"supersedes", []any{supersede(hidden, 0), supersede(shown, 1)}))
+	f.summarize("s1", m.run)
+	prompt := m.calls[0].prompt
+	if n := strings.Count(prompt, "\n#"); n != MaxCurrentPoints || strings.Contains(prompt, fmt.Sprintf("#%d ", hidden)) {
+		t.Fatal(n, prompt)
+	}
+	for _, p := range f.points() {
+		if p.supersededBy.Valid != (p.id == shown) {
+			t.Fatalf("%+v", p)
+		}
+	}
+}
+
+func TestDataBlockBounds(t *testing.T) {
+	f := newFixture(t)
+	repo := f.repo("s1")
+	var many []string
+	for i := range 12 {
+		many = append(many, fmt.Sprintf("alias%02d", i))
+	}
+	if err := subjects.AddAliases(f.db, repo, many); err != nil {
+		t.Fatal(err)
+	}
+	for i := range MaxCandidates {
+		var aliases []string
+		for j := range 8 {
+			aliases = append(aliases, fmt.Sprintf("mot-clé %02d %d %s", i, j, strings.Repeat("x", 50)))
+		}
+		f.activity(f.subject(fmt.Sprintf("Sujet %02d", i), aliases...), fmt.Sprintf("2026-01-01T00:%02d:00.000Z", i))
+	}
+	episode := f.oldEpisode("Vieux résumé")
+	long := f.addPoint(episode, "pending", strings.Repeat("é", 500), 5, 0)
+	f.exec("UPDATE points SET subject_uid = NULL WHERE id = ?", long)
+	f.seed("s1", greeting...)
+	m := newModel(answer())
+	f.summarize("s1", m.run)
+	prompt := m.calls[0].prompt
+	block := prompt[len(openMark)+1 : strings.Index(prompt, "\n\nConversation :")]
+	if n := runes(block); n > MaxDataChars || n < MaxDataChars-1000 {
+		t.Fatal(n)
+	}
+	if !strings.Contains(prompt, "alias07") || strings.Contains(prompt, "alias08") {
+		t.Fatal(prompt)
+	}
+	if !strings.Contains(prompt, fmt.Sprintf("#%d %s (", long, strings.Repeat("é", MaxPointChars))) ||
+		strings.Contains(prompt, strings.Repeat("é", MaxPointChars+1)) {
+		t.Fatal(prompt)
+	}
+	if !strings.Contains(prompt, "Sujet 59") || strings.Contains(prompt, "Sujet 00") || !strings.Contains(prompt, repo) {
+		t.Fatal(prompt)
+	}
+}
+
+func TestDataBlockTrimKeepsChecksConsistent(t *testing.T) {
+	f := newFixture(t)
+	episode := f.oldEpisode("Vieux résumé")
+	var open []int64
+	for i := range MaxOpenPoints {
+		open = append(open, f.addPoint(episode, "pending", fmt.Sprint(i, " ", strings.Repeat("p", 400)), 3, 0))
+	}
+	for i := range MaxCurrentPoints {
+		f.addPoint(episode, "fact", fmt.Sprint(i, " ", strings.Repeat("f", 400)), 3, 0)
+	}
+	d, err := gather(f.db, "s1", "", now0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runes(d.header()) > MaxDataChars || len(d.open) == MaxOpenPoints || len(d.current) == MaxCurrentPoints {
+		t.Fatal(runes(d.header()), len(d.open), len(d.current))
+	}
+	f.seed("s1", greeting...)
+	f.summarize("s1", newModel(with(answer(), "closes", ids(open...))).run)
+	if n := f.count("SELECT count(*) FROM points WHERE closed_at IS NOT NULL"); n != len(d.open) {
+		t.Fatal(n, len(d.open))
+	}
+}
+
+func TestKnownAliasesDoNotBumpSubject(t *testing.T) {
+	f := newFixture(t)
+	network := f.subject("Réseau maison", "box")
+	f.exec("UPDATE subjects SET updated_at = ? WHERE uid IN (?, ?)", t0, network, f.home)
+	f.seed("s1", greeting...)
+	f.summarize("s1", newModel(with(answer(point("subject", "new:0")),
+		"new_subjects", []any{fresh("réseau maison", "", "Box")},
+		"aliases", []any{map[string]any{"subject": network, "add": []any{"BOX", "réseau maison"}},
+			map[string]any{"subject": f.home, "add": []any{"maison"}}})).run)
+	if got := f.column("SELECT updated_at FROM subjects ORDER BY uid"); !slices.Equal(got, []string{t0, t0}) {
+		t.Fatal(got)
+	}
+}
+
+func TestRejectedClosesAndSupersedesCounted(t *testing.T) {
+	f := newFixture(t)
+	work := f.subject("Travail")
+	episode := f.oldEpisode("Vieux résumé")
+	fact := f.addPoint(episode, "fact", "Camille vit à Lyon", 3, 0)
+	f.seed("s1", greeting...)
+	buf := captureLog(t)
+	f.summarize("s1", newModel(with(answer(point("subject", work)), "closes", ids(99999),
+		"supersedes", []any{supersede(99999, 0), supersede(fact, 0)})).run)
+	if !strings.Contains(buf.String(), "propositions ignorées : s1 (3)") {
+		t.Fatal(buf.String())
 	}
 }
 

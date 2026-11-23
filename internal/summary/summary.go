@@ -37,6 +37,9 @@ const (
 	MaxCandidates    = 60
 	MaxOpenPoints    = 30
 	MaxCurrentPoints = 30
+	MaxShownAliases  = 8
+	MaxPointChars    = 300
+	MaxDataChars     = 15000
 )
 
 const (
@@ -333,7 +336,8 @@ func merge(c *calls, system string, data promptData, outputs []map[string]any) (
 				return nil, err
 			}
 			merged, err := c.summary(prompt(data, "Résumés partiels à fusionner, en JSON ; new:<n> y désigne new_subjects[n],"+
-				" liste commune à tous :\n"+body), system)
+				" liste commune à tous ; le new de chaque supersedes est le rang dans les points de son propre partiel,"+
+				" à partir de 0 :\n"+body), system)
 			if err != nil {
 				return nil, err
 			}
@@ -425,40 +429,76 @@ func newMessages(conn *sql.DB, sessionID string) ([]message, error) {
 	return out, rows.Err()
 }
 
+func pairs(q db.Querier, query string, args ...any) (map[string]string, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
+}
+
+// Words and adjacent word pairs, built once: one strings.Contains per term took 34 s on 6 M characters and
+// 3 000 subjects.
+func vocabulary(text string) func(term string) bool {
+	words := strings.Fields(subjects.Normalize(text))
+	seen := map[string]bool{}
+	for i, w := range words {
+		seen[w] = true
+		if i > 0 {
+			seen[words[i-1]+" "+w] = true
+		}
+	}
+	return func(term string) bool {
+		key := strings.Fields(subjects.Normalize(term))
+		if len(key) == 1 {
+			return seen[key[0]]
+		}
+		for i := 1; i < len(key); i++ {
+			if !seen[key[i-1]+" "+key[i]] {
+				return false
+			}
+		}
+		return len(key) > 1
+	}
+}
+
 func candidates(q db.Querier, sessionID, text string) ([]candidate, error) {
 	all, err := subjects.List(q)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := q.QueryContext(ctx, "SELECT subject_uid FROM session_repos WHERE session_id = ?", sessionID)
+	repos, err := pairs(q, "SELECT subject_uid, '' FROM session_repos WHERE session_id = ?", sessionID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	rank := map[string]int{}
-	for rows.Next() {
-		var uid string
-		if err := rows.Scan(&uid); err != nil {
-			return nil, err
-		}
-		rank[uid] = -2
-	}
-	if err := rows.Err(); err != nil {
+	active, err := pairs(q, "SELECT es.subject_uid, max(e.end_ts) FROM episode_subjects es"+
+		" JOIN episodes e ON e.uid = es.episode_uid GROUP BY es.subject_uid")
+	if err != nil {
 		return nil, err
 	}
-	// Padded with spaces so that a name only matches whole words: "net" is not in "internet".
-	normalized := " " + subjects.Normalize(text) + " "
+	mentioned := vocabulary(text)
+	rank := map[string]int{}
 	names := map[string]string{}
 	for _, s := range all {
 		names[s.UID] = s.Name
-		for _, term := range append([]string{s.Name}, s.Aliases...) {
-			if key := subjects.Normalize(term); rank[s.UID] == 0 && key != "" && strings.Contains(normalized, " "+key+" ") {
-				rank[s.UID] = -1
-			}
+		if _, ok := repos[s.UID]; ok {
+			rank[s.UID] = -2
+		} else if slices.ContainsFunc(append([]string{s.Name}, s.Aliases...), mentioned) {
+			rank[s.UID] = -1
 		}
 	}
 	slices.SortFunc(all, func(a, b subjects.Subject) int {
-		return cmp.Or(cmp.Compare(rank[a.UID], rank[b.UID]), cmp.Compare(b.UpdatedAt, a.UpdatedAt), cmp.Compare(a.UID, b.UID))
+		return cmp.Or(cmp.Compare(rank[a.UID], rank[b.UID]), cmp.Compare(active[b.UID], active[a.UID]),
+			cmp.Compare(b.UpdatedAt, a.UpdatedAt), cmp.Compare(a.UID, b.UID))
 	})
 	out := []candidate{}
 	for _, s := range all[:min(len(all), MaxCandidates)] {
@@ -471,14 +511,9 @@ func candidates(q db.Querier, sessionID, text string) ([]candidate, error) {
 	return out, nil
 }
 
-func shownPoints(q db.Querier, uids []string, where string, limit int, now time.Time) ([]shownPoint, error) {
-	raw, err := json.Marshal(uids)
-	if err != nil {
-		return nil, err
-	}
+func shownPoints(q db.Querier, limit int, now time.Time, where string, args ...any) ([]shownPoint, error) {
 	rows, err := q.QueryContext(ctx, "SELECT p.id, p.kind, p.text, p.importance, p.created_at, p.subject_uid,"+
-		" u.last_used_at FROM points p LEFT JOIN point_usage u ON u.uid = p.uid"+
-		" WHERE p.subject_uid IN (SELECT value FROM json_each(?)) AND "+where, string(raw))
+		" u.last_used_at FROM points p LEFT JOIN point_usage u ON u.uid = p.uid WHERE "+where, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -500,10 +535,19 @@ func shownPoints(q db.Querier, uids []string, where string, limit int, now time.
 	scored := memory.Score(points, nil, now)
 	var out []shownPoint
 	for _, s := range scored[:min(len(scored), limit)] {
-		out = append(out, shownPoint{id: s.ID, kind: s.Kind, text: s.Text, subject: *s.SubjectUID})
+		p := shownPoint{id: s.ID, kind: s.Kind, text: s.Text}
+		if s.SubjectUID != nil {
+			p.subject = *s.SubjectUID
+		}
+		out = append(out, p)
 	}
 	return out, nil
 }
+
+const (
+	ofCandidates = "p.subject_uid IN (SELECT value FROM json_each(?))"
+	openPending  = " AND p.kind = 'pending' AND p.closed_at IS NULL"
+)
 
 func gather(q db.Querier, sessionID, text string, now time.Time) (promptData, error) {
 	var d promptData
@@ -515,12 +559,25 @@ func gather(q db.Querier, sessionID, text string, now time.Time) (promptData, er
 	for i, c := range d.candidates {
 		uids[i] = c.uid
 	}
-	if d.open, err = shownPoints(q, uids, "p.kind = 'pending' AND p.closed_at IS NULL", MaxOpenPoints, now); err != nil {
+	raw, err := json.Marshal(uids)
+	if err != nil {
 		return d, err
 	}
-	d.current, err = shownPoints(q, uids, "p.kind IN ('decision', 'fact') AND p.superseded_by_uid IS NULL",
-		MaxCurrentPoints, now)
-	return d, err
+	if d.open, err = shownPoints(q, MaxOpenPoints, now, ofCandidates+openPending, string(raw)); err != nil {
+		return d, err
+	}
+	// A pending point with no subject would otherwise never be closed.
+	loose, err := shownPoints(q, MaxOpenPoints-len(d.open), now, "p.subject_uid IS NULL"+openPending)
+	if err != nil {
+		return d, err
+	}
+	d.open = append(d.open, loose...)
+	if d.current, err = shownPoints(q, MaxCurrentPoints, now,
+		ofCandidates+" AND p.kind IN ('decision', 'fact') AND p.superseded_by_uid IS NULL", string(raw)); err != nil {
+		return d, err
+	}
+	d.fit()
+	return d, nil
 }
 
 type newSubject struct {
@@ -550,6 +607,7 @@ type episode struct {
 	aliases        []aliasAdd
 	supersedes     []replacement
 	candidates     map[string]bool
+	rejected       int
 }
 
 func summarize(conn *sql.DB, user, sessionID string, c *calls, now time.Time) (Outcome, error) {
@@ -677,6 +735,8 @@ func summarizeParts(c *calls, user, sessionID string, parts []string, data promp
 		id, ok := integer(v)
 		if ok && slices.ContainsFunc(data.open, func(p shownPoint) bool { return p.id == id }) {
 			e.closes = append(e.closes, id)
+		} else {
+			e.rejected++
 		}
 	}
 	e.candidates = map[string]bool{}
@@ -693,6 +753,8 @@ func summarizeParts(c *calls, user, sessionID string, parts []string, data promp
 		if oldOK && rankOK && kept && (e.points[i].kind == "decision" || e.points[i].kind == "fact") &&
 			slices.ContainsFunc(data.current, func(p shownPoint) bool { return p.id == old }) {
 			e.supersedes = append(e.supersedes, replacement{old, i})
+		} else {
+			e.rejected++
 		}
 	}
 	return nil
@@ -706,7 +768,6 @@ type refs struct {
 	ignored    int
 }
 
-// A candidate merged away during the call lives on under the subject it was merged into.
 func live(q db.Querier, uid string) (string, error) {
 	for seen := map[string]bool{}; !seen[uid]; {
 		seen[uid] = true
@@ -758,7 +819,6 @@ func (r *refs) graph(e episode) error {
 			if uid, err = subjects.Create(r.q, s.name, s.aliases, nil); err != nil {
 				return err
 			}
-			// Create returns a homonym as is: the keywords proposed for it are added.
 			if err := subjects.AddAliases(r.q, uid, s.aliases); err != nil {
 				return err
 			}
@@ -863,10 +923,14 @@ func store(conn *sql.DB, sessionID string, e episode, created string) (written b
 			}
 		}
 		for _, s := range e.supersedes {
-			if _, err := c.ExecContext(ctx, "UPDATE points SET superseded_by_uid = ?, superseded_at = ?, updated_at = ?"+
+			res, err := c.ExecContext(ctx, "UPDATE points SET superseded_by_uid = ?, superseded_at = ?, updated_at = ?"+
 				" WHERE id = ? AND subject_uid = ? AND kind IN ('decision', 'fact') AND superseded_by_uid IS NULL",
-				pointUIDs[s.rank], created, created, s.old, pointSubjects[s.rank]); err != nil {
+				pointUIDs[s.rank], created, created, s.old, pointSubjects[s.rank])
+			if err != nil {
 				return err
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				r.ignored++
 			}
 		}
 		for subject := range about {
@@ -882,7 +946,7 @@ func store(conn *sql.DB, sessionID string, e episode, created string) (written b
 		if _, err := subjects.MergeDuplicates(c); err != nil {
 			return err
 		}
-		written, ignored = true, r.ignored
+		written, ignored = true, r.ignored+e.rejected
 		return nil
 	})
 	if ignored > 0 {

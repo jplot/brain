@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jplot/brain/internal/mask"
 )
@@ -106,24 +107,47 @@ func section(title string, lines []string) string {
 	return title + " :\n" + strings.Join(lines, "\n")
 }
 
-func prompt(d promptData, body string) string {
+func (d promptData) header() string {
 	var candidates, open, current []string
 	for _, c := range d.candidates {
 		line := fmt.Sprintf("%s (%s) %s", c.uid, c.kind, c.name)
 		if len(c.aliases) > 0 {
-			line += " ; mots-clés : " + strings.Join(c.aliases, ", ")
+			line += " ; mots-clés : " + strings.Join(c.aliases[:min(len(c.aliases), MaxShownAliases)], ", ")
 		}
 		if c.parent != "" {
 			line += " ; parent : " + c.parent
 		}
 		candidates = append(candidates, line)
 	}
+	about := func(p shownPoint) string {
+		if p.subject == "" {
+			return "sans sujet"
+		}
+		return "sujet : " + p.subject
+	}
 	for _, p := range d.open {
-		open = append(open, fmt.Sprintf("#%d %s (sujet : %s)", p.id, p.text, p.subject))
+		open = append(open, fmt.Sprintf("#%d %s (%s)", p.id, truncate(p.text, MaxPointChars), about(p)))
 	}
 	for _, p := range d.current {
-		current = append(current, fmt.Sprintf("#%d %s : %s (sujet : %s)", p.id, p.kind, p.text, p.subject))
+		current = append(current, fmt.Sprintf("#%d %s : %s (%s)", p.id, p.kind, truncate(p.text, MaxPointChars), about(p)))
 	}
-	return wrap(strings.Join([]string{section("Sujets candidats", candidates), section("Points en suspens", open),
-		section("Décisions et faits en vigueur", current), body}, "\n\n"))
+	return strings.Join([]string{section("Sujets candidats", candidates), section("Points en suspens", open),
+		section("Décisions et faits en vigueur", current)}, "\n\n")
 }
+
+// The longest list loses its last entry first: 60 candidates with long keywords must not push out the only
+// pending point, which would then never be closed.
+func (d *promptData) fit() {
+	for utf8.RuneCountInString(d.header()) > MaxDataChars {
+		switch n := max(len(d.candidates), len(d.current), len(d.open)); n {
+		case len(d.candidates):
+			d.candidates = d.candidates[:n-1]
+		case len(d.current):
+			d.current = d.current[:n-1]
+		default:
+			d.open = d.open[:n-1]
+		}
+	}
+}
+
+func prompt(d promptData, body string) string { return wrap(d.header() + "\n\n" + body) }

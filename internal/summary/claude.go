@@ -41,20 +41,20 @@ type Error struct {
 
 func (e *Error) Error() string { return e.msg }
 
-func RunClaude(model, effort string) Runner {
+func RunClaude(name, level string) Runner {
 	return func(prompt, system string, schema any) (Result, error) {
-		return runClaude(model, effort, prompt, system, schema)
+		return runClaude(name, level, prompt, system, schema)
 	}
 }
 
-func runClaude(model, effort, prompt, system string, schema any) (Result, error) {
+func runClaude(name, level, prompt, system string, schema any) (Result, error) {
 	encoded, err := json.Marshal(schema)
 	if err != nil {
 		return Result{}, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "claude", "-p", "--safe-mode", "--model", model, "--effort", effort, "--tools", "",
+	cmd := exec.CommandContext(ctx, "claude", "-p", "--safe-mode", "--model", name, "--effort", level, "--tools", "",
 		"--no-session-persistence", "--output-format", "json", "--json-schema", string(encoded),
 		"--system-prompt", system)
 	cmd.Stdin = strings.NewReader(prompt)
