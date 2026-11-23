@@ -102,7 +102,7 @@ fetch() {
 }
 
 if [ "$mode" = hook ]; then
-  (install >/dev/null 2>&1 </dev/null &)
+  (exec </dev/null >/dev/null 2>&1; install) &
   exit 0
 fi
 

@@ -42,6 +42,7 @@ type env struct {
 	home  string
 	serve string
 	extra []string
+	shell string
 }
 
 func newEnv(t *testing.T) *env {
@@ -88,7 +89,11 @@ func (e *env) corruptChecksum() {
 func (e *env) installed() string { return filepath.Join(e.home, "bin", "paul-"+version) }
 
 func (e *env) cmd(args ...string) *exec.Cmd {
-	cmd := exec.Command("sh", append([]string{filepath.Join(e.root, "plugin/bin/paul")}, args...)...)
+	shell := e.shell
+	if shell == "" {
+		shell = "sh"
+	}
+	cmd := exec.Command(shell, append([]string{filepath.Join(e.root, "plugin/bin/paul")}, args...)...)
 	cmd.Env = append(os.Environ(),
 		"PATH="+filepath.Join(e.root, "fakebin")+":"+os.Getenv("PATH"),
 		"PAUL_HOME="+e.home,
@@ -208,19 +213,28 @@ func readLines(t *testing.T, p string) []string {
 }
 
 func TestAbsentBinaryInHookModeReturnsAtOnceAndInstallsInBackground(t *testing.T) {
-	e := newEnv(t)
-	e.extra = []string{"FAKE_CURL_DELAY=1"}
-	r := e.run("hook", "start")
-	if r.code != 0 || r.stdout != "" || r.stderr != "" {
-		t.Fatalf("got %+v", r)
+	// dash (Debian's sh) keeps a copy of stdout open while a function with redirections runs.
+	for _, shell := range []string{"sh", "bash", "dash"} {
+		t.Run(shell, func(t *testing.T) {
+			if _, err := exec.LookPath(shell); err != nil {
+				t.Skip(shell + " absent")
+			}
+			e := newEnv(t)
+			e.shell = shell
+			e.extra = []string{"FAKE_CURL_DELAY=1"}
+			r := e.run("hook", "start")
+			if r.code != 0 || r.stdout != "" || r.stderr != "" {
+				t.Fatalf("got %+v", r)
+			}
+			if r.elapsed >= time.Second {
+				t.Fatalf("hook took %v", r.elapsed)
+			}
+			if _, err := os.Stat(e.installed()); err == nil {
+				t.Fatal("installed synchronously")
+			}
+			e.waitInstalled()
+		})
 	}
-	if r.elapsed >= time.Second {
-		t.Fatalf("hook took %v", r.elapsed)
-	}
-	if _, err := os.Stat(e.installed()); err == nil {
-		t.Fatal("installed synchronously")
-	}
-	e.waitInstalled()
 }
 
 func TestBadChecksum(t *testing.T) {
