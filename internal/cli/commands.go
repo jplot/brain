@@ -442,7 +442,7 @@ func summarize(e *env, args []string) (int, error) {
 			unit, who = "points", short(o.SessionID)+"  "
 			points += o.Points
 		case o.SubjectUID != "":
-			unit, who = "points", "sujet "+short(o.SubjectUID)+"  "
+			unit, who = "points", "subject "+short(o.SubjectUID)+"  "
 		}
 		fmt.Fprintf(e.out, "%s%s  %d %s  $%.4f\n", who, statuses[o.Status], o.Points, unit, o.CostUSD)
 		cost += o.CostUSD
