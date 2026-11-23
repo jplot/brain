@@ -308,6 +308,26 @@ func TestInjectSpecificNameSilencesAmbiguousFirstName(t *testing.T) {
 	}
 }
 
+func TestPlanRecordsNothingUntilRecord(t *testing.T) {
+	f := newFixture(t)
+	uid := f.subject("Billing")
+	pt := f.point(uid, "decision", "invoices are rounded per line", 4, false)
+	in, err := Plan(f.db, "sess", "Let us talk about Billing")
+	if err != nil || !strings.Contains(in.Text, "Sujet « Billing »") {
+		t.Fatalf("%v\n%s", err, in.Text)
+	}
+	count := func(q string) (n int) { f.db.QueryRow(q).Scan(&n); return }
+	if count("SELECT count(*) FROM injected")+count("SELECT count(*) FROM point_usage") != 0 {
+		t.Fatal("Plan wrote")
+	}
+	if err := in.Record(f.db, now); err != nil {
+		t.Fatal(err)
+	}
+	if count("SELECT count(*) FROM injected WHERE subject_uid = '"+uid+"'") != 1 || count("SELECT count(*) FROM point_usage WHERE uid = '"+pt+"'") != 1 {
+		t.Fatal("Record did not write")
+	}
+}
+
 func TestInjectOncePerSession(t *testing.T) {
 	f := newFixture(t)
 	f.subject("Billing")

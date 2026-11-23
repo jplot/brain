@@ -46,16 +46,21 @@ func Run(event string, p paths.Paths, stdin io.Reader, stdout io.Writer) int {
 			log.Printf("hook start : commande du terminal : %v", err)
 		}
 		if in.Source == "startup" || in.Source == "clear" {
-			emit(stdout, "SessionStart", startBudget, func() (string, error) {
-				return withDB(p, func(d *sql.DB) (string, error) {
+			emit(stdout, "SessionStart", startBudget, func() (string, func() error, error) {
+				text, err := withDB(p, func(d *sql.DB) (string, error) {
 					return memo.Start(d, cwdOrCurrent(in.Cwd), in.SessionID, time.Now())
 				})
+				return text, nil, err
 			})
 		}
 	case "prompt":
 		if in.SessionID != "" && in.Prompt != "" {
-			emit(stdout, "UserPromptSubmit", promptBudget, func() (string, error) {
-				return withDB(p, func(d *sql.DB) (string, error) { return memo.Inject(d, in.SessionID, in.Prompt) })
+			emit(stdout, "UserPromptSubmit", promptBudget, func() (string, func() error, error) {
+				inj, err := withDB(p, func(d *sql.DB) (memo.Injection, error) { return memo.Plan(d, in.SessionID, in.Prompt) })
+				return inj.Text, func() error {
+					_, err := withDB(p, func(d *sql.DB) (struct{}, error) { return struct{}{}, inj.Record(d, time.Now()) })
+					return err
+				}, err
 			})
 		}
 	case "end":
@@ -123,10 +128,11 @@ func readPayload(r io.Reader) payload {
 	return in
 }
 
-func withDB(p paths.Paths, f func(*sql.DB) (string, error)) (string, error) {
+func withDB[T any](p paths.Paths, f func(*sql.DB) (T, error)) (T, error) {
 	d, err := db.Open(p, busyTimeout)
 	if err != nil {
-		return "", err
+		var zero T
+		return zero, err
 	}
 	defer d.Close()
 	return f(d)
@@ -142,15 +148,17 @@ type specific struct {
 }
 
 // emit runs work against a deadline; on timeout the work is abandoned to the process exit.
-func emit(stdout io.Writer, name string, budget time.Duration, work func() (string, error)) {
+// record, when not nil, runs only once the text was written.
+func emit(stdout io.Writer, name string, budget time.Duration, work func() (string, func() error, error)) {
 	type result struct {
-		text string
-		err  error
+		text   string
+		record func() error
+		err    error
 	}
 	done := make(chan result, 1)
 	go func() {
-		text, err := work()
-		done <- result{text, err}
+		text, record, err := work()
+		done <- result{text, record, err}
 	}()
 	select {
 	case r := <-done:
@@ -167,6 +175,12 @@ func emit(stdout io.Writer, name string, budget time.Duration, work func() (stri
 		enc.Encode(output{specific{name, r.text}})
 		if _, err := stdout.Write(bytes.TrimRight(out.Bytes(), "\n")); err != nil {
 			log.Printf("hook %s : écriture : %v", name, err)
+			return
+		}
+		if r.record != nil {
+			if err := r.record(); err != nil {
+				log.Printf("hook %s : enregistrement : %v", name, err)
+			}
 		}
 	case <-time.After(budget):
 		log.Printf("hook %s : délai de %v dépassé", name, budget)

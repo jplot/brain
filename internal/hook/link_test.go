@@ -123,3 +123,17 @@ func TestStartLinksTheCommandAndLogsARegularFile(t *testing.T) {
 		t.Fatalf("%q, log %q", raw, f.logs.String())
 	}
 }
+
+func TestLinkCommandWaitsForTheBinary(t *testing.T) {
+	p, link := linkFixture(t)
+	installVersion(t, p, "0.9.0")
+	if err := LinkCommand(p, "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("dangling link: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(p.Bin(), "paul-0.9.0")); err != nil {
+		t.Fatal(err)
+	}
+}

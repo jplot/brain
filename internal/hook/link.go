@@ -17,6 +17,9 @@ func LinkCommand(p paths.Paths, version string) error {
 	}
 	current := "paul-" + version
 	target := filepath.Join(p.Bin(), current)
+	if _, err := os.Stat(target); err != nil {
+		return nil
+	}
 	link := filepath.Join(p.BinDir(), "paul")
 	if info, err := os.Lstat(link); err == nil && info.Mode()&os.ModeSymlink == 0 {
 		return fmt.Errorf("%s existe et n'est pas un lien : laissé tel quel", link)

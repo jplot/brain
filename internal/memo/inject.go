@@ -44,15 +44,43 @@ type ambiguity struct {
 	candidates []subjects.Subject
 }
 
+// Injection is what a prompt should be given, and what to record once it has been.
+type Injection struct {
+	Text      string
+	sessionID string
+	keys      []string
+	used      []string
+}
+
 func Inject(q db.Querier, sessionID, prompt string) (string, error) {
+	in, err := Plan(q, sessionID, prompt)
+	if err != nil {
+		return "", err
+	}
+	return in.Text, in.Record(q, time.Now())
+}
+
+// Record marks the injected subjects and the shown points; the caller does it only after delivering Text.
+func (in Injection) Record(q db.Querier, now time.Time) error {
+	for _, key := range in.keys {
+		if _, err := q.ExecContext(background, "INSERT OR IGNORE INTO injected(session_id, subject_uid) VALUES (?, ?)", in.sessionID, key); err != nil {
+			return err
+		}
+	}
+	return memory.MarkUsed(q, in.used, now)
+}
+
+// Plan only reads: nothing counts as shown until Record.
+func Plan(q db.Querier, sessionID, prompt string) (Injection, error) {
+	in := Injection{sessionID: sessionID}
 	terms := messageTerms(prompt)
 	if len(terms) == 0 {
-		return "", nil
+		return in, nil
 	}
 	words := slices.DeleteFunc(slices.Clone(terms), func(t string) bool { return strings.Contains(t, " ") })
 	hits, err := subjects.ByTerms(q, terms)
 	if err != nil {
-		return "", err
+		return in, err
 	}
 	var named []subjects.Subject
 	chosen := map[string]bool{}
@@ -78,14 +106,12 @@ func Inject(q db.Querier, sessionID, prompt string) (string, error) {
 		key := "ambiguous:" + d.term
 		said, err := wasInjected(q, sessionID, key)
 		if err != nil {
-			return "", err
+			return in, err
 		}
 		if said {
 			continue
 		}
-		if _, err := q.ExecContext(background, "INSERT OR IGNORE INTO injected(session_id, subject_uid) VALUES (?, ?)", sessionID, key); err != nil {
-			return "", err
-		}
+		in.keys = append(in.keys, key)
 		names := make([]string, len(d.candidates))
 		for i, c := range d.candidates {
 			names[i] = c.Name
@@ -100,25 +126,22 @@ func Inject(q db.Querier, sessionID, prompt string) (string, error) {
 		}
 		done, err := wasInjected(q, sessionID, s.UID)
 		if err != nil {
-			return "", err
+			return in, err
 		}
 		if done {
 			continue
 		}
 		text, used, err := index(q, s.UID, words, now)
 		if err != nil {
-			return "", err
+			return in, err
 		}
-		if _, err := q.ExecContext(background, "INSERT OR IGNORE INTO injected(session_id, subject_uid) VALUES (?, ?)", sessionID, s.UID); err != nil {
-			return "", err
-		}
-		if err := memory.MarkUsed(q, used, now); err != nil {
-			return "", err
-		}
+		in.keys = append(in.keys, s.UID)
+		in.used = append(in.used, used...)
 		out = append(out, text)
 		shown++
 	}
-	return strings.Join(out, "\n"), nil
+	in.Text = strings.Join(out, "\n")
+	return in, nil
 }
 
 func wasInjected(q db.Querier, sessionID, key string) (bool, error) {

@@ -432,10 +432,42 @@ func TestHookPromptSilentOnError(t *testing.T) {
 	}
 }
 
-func TestHookPromptGivesUpOnALockedDatabase(t *testing.T) {
+func TestHookPromptRecordsAfterWriting(t *testing.T) {
 	f := newFixture(t)
 	d := f.db()
-	if _, err := subjects.Create(d, "Facturation", nil, nil); err != nil {
+	uid, err := subjects.Create(d, "Facturation", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := f.run("prompt", `{"session_id":"s1","prompt":"Revoyons la facturation"}`); out == "" {
+		t.Fatal("no injection")
+	}
+	var n int
+	d.QueryRow("SELECT count(*) FROM injected WHERE session_id = 's1' AND subject_uid = ?", uid).Scan(&n)
+	if n != 1 {
+		t.Fatalf("injected rows: %d", n)
+	}
+}
+
+func TestEmitRecordsNothingAfterTheBudget(t *testing.T) {
+	f := newFixture(t)
+	recorded := make(chan struct{}, 1)
+	var out bytes.Buffer
+	emit(&out, "UserPromptSubmit", 30*time.Millisecond, func() (string, func() error, error) {
+		time.Sleep(150 * time.Millisecond)
+		return "texte", func() error { recorded <- struct{}{}; return nil }, nil
+	})
+	time.Sleep(250 * time.Millisecond)
+	if out.Len() != 0 || len(recorded) != 0 || !strings.Contains(f.logs.String(), "délai") {
+		t.Fatalf("out %q, recorded %d, log %q", out.String(), len(recorded), f.logs.String())
+	}
+}
+
+func TestHookPromptRecordsNothingWhenTheRecordIsBlocked(t *testing.T) {
+	f := newFixture(t)
+	d := f.db()
+	uid, err := subjects.Create(d, "Facturation", nil, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
 	tx, err := d.Begin()
@@ -446,8 +478,11 @@ func TestHookPromptGivesUpOnALockedDatabase(t *testing.T) {
 	if _, err := tx.Exec("INSERT INTO injected(session_id, subject_uid) VALUES ('other', 'x')"); err != nil {
 		t.Fatal(err)
 	}
-	out, took := f.run("prompt", `{"session_id":"s1","prompt":"Revoyons la facturation"}`)
-	if out != "" || took > 250*time.Millisecond {
-		t.Fatalf("%q after %v", out, took)
+	_, took := f.run("prompt", `{"session_id":"s1","prompt":"Revoyons la facturation"}`)
+	var n int
+	tx.Rollback()
+	d.QueryRow("SELECT count(*) FROM injected WHERE session_id = 's1' AND subject_uid = ?", uid).Scan(&n)
+	if n != 0 || took > 400*time.Millisecond || !strings.Contains(f.logs.String(), "enregistrement") {
+		t.Fatalf("rows %d after %v, log %q", n, took, f.logs.String())
 	}
 }
