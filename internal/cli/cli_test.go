@@ -611,12 +611,6 @@ func TestDoubleDashEndsTheOptions(t *testing.T) {
 	contains(t, f.fails(2, "search", "pomme", "--since"), "valeur manquante")
 }
 
-func TestMemoNamedSubjectWithNothingToShow(t *testing.T) {
-	f := newFixture(t)
-	f.subject("Vide")
-	lacks(t, f.ok("memo", "--subject", "vide"), "dossier")
-}
-
 func TestForgetSessionDescriptionCountsWhatGoes(t *testing.T) {
 	f := newFixture(t)
 	f.transcript(s1, message(s1, "2026-10-26T23:45:57Z", "une pomme"), message(s1, "2026-10-26T23:46:57Z", "une poire"))

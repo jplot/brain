@@ -348,9 +348,8 @@ func memoCmd(e *env, args []string) (int, error) {
 		return 0, err
 	}
 	defer conn.Close()
-	var text, none string
+	var text string
 	if *subject != "" {
-		none = "Aucun souvenir pour ce sujet."
 		s, err := resolveSubject(conn, *subject)
 		if err != nil {
 			return 0, err
@@ -360,7 +359,6 @@ func memoCmd(e *env, args []string) (int, error) {
 			return 0, err
 		}
 	} else {
-		none = "Aucun souvenir pour ce dossier."
 		cwd, err := os.Getwd()
 		if err == nil {
 			_, err = os.Stat(cwd)
@@ -373,7 +371,7 @@ func memoCmd(e *env, args []string) (int, error) {
 		}
 	}
 	if text == "" {
-		text = none
+		text = "Aucun souvenir pour ce dossier."
 	}
 	fmt.Fprintln(e.out, text)
 	return 0, nil
