@@ -45,7 +45,6 @@ Usage: paul <command> [options]
   rebuild
   web                           --no-open
   hook start|prompt|end
-  migrate                       --from --root
   sync                          not available yet
 `
 )
@@ -71,7 +70,7 @@ func commands() map[string]command {
 		"search": searchCmd, "souvenirs": souvenirs, "session": session, "day": day,
 		"subjects": subjectsTree, "memo": memoCmd, "summarize": summarize, "forget": forget,
 		"index": indexCmd, "rebuild": rebuild,
-		"web": webCmd, "hook": hookCmd, "migrate": migrateCmd, "sync": notYet("sync"),
+		"web": webCmd, "hook": hookCmd, "sync": notYet("sync"),
 	}
 }
 

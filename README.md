@@ -35,7 +35,6 @@ paul forget point|session <id>  --yes
 paul index
 paul rebuild
 paul web                        --no-open
-paul migrate                    --from --root
 ```
 
 - `--kind` takes `topic`, `decision`, `pending` or `fact`.
@@ -57,14 +56,3 @@ text     the message; paul masks it at indexing
 title    optional; session title
 cwd      optional; repository hint for the summarizer
 ```
-
-## Coming from the Python version
-
-Do this on a single machine:
-
-1. Stop whatever uses the old database: the `brain hook` hooks of Claude Code (open sessions included), any running `brain web` and any Python process of the old version. Also close Claude Code sessions and any running `paul web` before running `paul migrate`.
-2. Remove the `brain hook` hooks from `~/.claude/settings.json` and the `~/.claude/skills/souvenirs/` skill.
-3. Run `paul migrate` (`--from` for the path of the old database, `--root` for the root of its projects). The command refuses to run if `paul.db` already contains memories; a database created by the first hooks, still without memories, is replaced. Each old project becomes a subject, points are attached to their subject, tags and accesses are dropped, then the index is rebuilt.
-4. The old version's voice assistant journal is converted to format v1 in `~/.claude/paul/journals/vocal.jsonl`.
-
-The old database is never modified: `paul migrate` only reads a copy of it.

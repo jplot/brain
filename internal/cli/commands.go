@@ -3,9 +3,7 @@ package cli
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,7 +14,6 @@ import (
 	"github.com/jplot/brain/internal/lock"
 	"github.com/jplot/brain/internal/memo"
 	"github.com/jplot/brain/internal/memory"
-	"github.com/jplot/brain/internal/migrate"
 	"github.com/jplot/brain/internal/search"
 	"github.com/jplot/brain/internal/subjects"
 	"github.com/jplot/brain/internal/summary"
@@ -557,24 +554,6 @@ func rebuild(e *env, args []string) (int, error) {
 		return 0, err
 	}
 	return report(e, stats), nil
-}
-
-// The old base does not store its projects root: ~/Projects was the old default.
-func migrateCmd(e *env, args []string) (int, error) {
-	user, _ := os.UserHomeDir()
-	fs := newFlags("migrate")
-	from := fs.String("from", filepath.Join(user, ".claude", "brain", "brain.db"), "")
-	root := fs.String("root", filepath.Join(user, "Projects"), "")
-	if _, err := parseArgs(fs, args); err != nil {
-		return 0, err
-	}
-	// Run once, by hand: the reason goes to the terminal as well as to paul.log.
-	if err := migrate.Run(*from, *root, e.p, e.out); err != nil {
-		log.Printf("migrate: %v", err)
-		fmt.Fprintf(e.err, "paul: migration impossible: %v\n", err)
-		return 1, nil
-	}
-	return 0, nil
 }
 
 func webCmd(e *env, args []string) (int, error) {

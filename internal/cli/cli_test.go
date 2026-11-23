@@ -570,21 +570,6 @@ func TestNotYetAvailableCommands(t *testing.T) {
 	contains(t, f.ok("--help"), "  sync                          not available yet\n")
 }
 
-func TestMigrateRefusals(t *testing.T) {
-	f := newFixture(t)
-	missing := filepath.Join(t.TempDir(), "brain.db")
-	f.ok("index")
-	f.episode(s1, "t", "r")
-	contains(t, f.fails(1, "migrate", "--from", missing), "paul: migration impossible: paul.db already contains memories")
-	f.db().Close()
-	os.Remove(f.p.DB())
-	contains(t, f.fails(1, "migrate", "--from", missing), "paul: migration impossible: old database not found: "+missing)
-	logged, _ := os.ReadFile(f.p.Log())
-	contains(t, string(logged), "migrate: paul.db already contains memories")
-	contains(t, string(logged), "migrate: old database not found: "+missing)
-	f.fails(2, "migrate", "--inconnue")
-}
-
 type lockedBuffer struct {
 	mu sync.Mutex
 	b  bytes.Buffer
