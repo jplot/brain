@@ -257,12 +257,12 @@ func TestMigrateProjectsBecomeSubjects(t *testing.T) {
 		JOIN subjects s ON s.uid = es.subject_uid ORDER BY e.id, s.name`), []string{"7 atelier", "7 jardin"})
 	equal(t, column(t, conn, "SELECT session_id||' '||role||' '||text FROM messages"), []string{"s-un user bonjour"})
 	equal(t, column(t, conn, "SELECT term FROM subject_terms ORDER BY term"), []string{"atelier", "jardin"})
-	for _, want := range []string{"Sessions résumées : 2", "Épisodes : 2", "Points : 4", "Sujets créés : 2", "Lignes vocales converties : 0"} {
+	for _, want := range []string{"Summarized sessions: 2", "Episodes: 2", "Points: 4", "Subjects created: 2", "Voice lines converted: 0"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "Racine") {
+	if strings.Contains(out, "Projects root") {
 		t.Errorf("root reported missing:\n%s", out)
 	}
 }
@@ -304,7 +304,7 @@ func TestMigrateWarnsWhenRootAbsent(t *testing.T) {
 	f.build(f.sample()...).Close()
 	f.root = filepath.Join(f.dir, "Ailleurs")
 	out := f.migrate()
-	if !strings.Contains(out, "Racine des projets absente de l'ancienne base : "+f.root) {
+	if !strings.Contains(out, "Projects root missing from the old database: "+f.root) {
 		t.Fatal(out)
 	}
 	equal(t, column(t, f.open(), "SELECT name FROM subjects WHERE name = 'Projects'"), []string{"Projects"})
@@ -420,7 +420,7 @@ func TestMigrateRefusesABaseWithMemories(t *testing.T) {
 	f.build(f.sample()...).Close()
 	f.firstHook("INSERT INTO episodes(uid, session_id, start_ts, end_ts, created_at, updated_at) VALUES ('e', 's', 'a', 'a', 'a', 'a')")
 	err := Run(f.old, f.root, f.p, io.Discard)
-	if err == nil || err.Error() != "paul.db contient déjà des souvenirs : la reprise doit se faire avant tout résumé" {
+	if err == nil || err.Error() != "paul.db already contains memories: migration must happen before any summary" {
 		t.Fatalf("got %v", err)
 	}
 	equal(t, column(t, f.open(), "SELECT count(*) FROM episodes"), []string{"1"})
@@ -459,7 +459,7 @@ func TestMigrateDoneEvenIfIndexFails(t *testing.T) {
 	}
 	out := f.migrate()
 	equal(t, during, []string{"index.lock", "paul.db"})
-	if !strings.Contains(out, "Points : 4") || !strings.Contains(out, "Index non reconstruit : il le sera au prochain lancement de paul") {
+	if !strings.Contains(out, "Points: 4") || !strings.Contains(out, "Index not rebuilt: it will be at the next paul launch") {
 		t.Fatal(out)
 	}
 	conn := f.open()
@@ -477,7 +477,7 @@ func TestMigrateRelativeRoot(t *testing.T) {
 	if err := Run(f.old, "Projects", f.p, &out); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(out.String(), "Racine") {
+	if strings.Contains(out.String(), "Projects root") {
 		t.Fatal(out.String())
 	}
 	equal(t, column(t, f.open(), "SELECT count(*) FROM points WHERE subject_uid IS NULL"), []string{"1"})
@@ -529,7 +529,7 @@ func TestMigrateInterruptedRemovesStaging(t *testing.T) {
 		cmd.Process.Kill()
 		t.Fatalf("child still running\n%s", out.String())
 	}
-	if !strings.Contains(out.String(), "interrompue avant la fin : rien n'est écrit, la copie de travail est effacée") {
+	if !strings.Contains(out.String(), "interrupted before the end: nothing is written, the working copy is erased") {
 		t.Fatalf("output:\n%s", out.String())
 	}
 	equal(t, tree(t, f.p.Home), nil)
@@ -567,7 +567,7 @@ func TestMigrateRefusesExistingJournal(t *testing.T) {
 		os.MkdirAll(f.p.Journals(), 0o700)
 		os.WriteFile(existing, []byte("déjà là\n"), 0o600)
 		err := Run(f.old, f.root, f.p, io.Discard)
-		if err == nil || !strings.Contains(err.Error(), existing+" existe déjà") {
+		if err == nil || !strings.Contains(err.Error(), existing+" already exists") {
 			t.Fatalf("%s: got %v", name, err)
 		}
 		if b, _ := os.ReadFile(existing); string(b) != "déjà là\n" {
@@ -584,7 +584,7 @@ func TestMigrateExplainsGitUnusable(t *testing.T) {
 	os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nexit 1\n"), 0o755)
 	t.Setenv("PATH", bin)
 	err := Run(f.old, f.root, f.p, io.Discard)
-	if !errors.Is(err, repo.ErrGit) || !strings.Contains(err.Error(), "git est nécessaire pour reconnaître les dépôts") {
+	if !errors.Is(err, repo.ErrGit) || !strings.Contains(err.Error(), "git is required to recognize the repositories") {
 		t.Fatalf("got %v", err)
 	}
 	equal(t, tree(t, f.p.Home), nil)
@@ -613,7 +613,7 @@ func TestMigrateArchivesMessagesOfDeletedTranscripts(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := f.migrate()
-	if !strings.Contains(out, "Messages archivés : 3") {
+	if !strings.Contains(out, "Archived messages: 3") {
 		t.Errorf("missing count in:\n%s", out)
 	}
 	archive := filepath.Join(f.p.Journals(), "archive.jsonl")
@@ -659,7 +659,7 @@ func TestMigrateSymlinkedTranscriptsAreNotArchived(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := f.migrate()
-	if !strings.Contains(out, "Messages archivés : 3") {
+	if !strings.Contains(out, "Archived messages: 3") {
 		t.Fatal(out)
 	}
 	equal(t, column(t, f.open(), "SELECT count(*) FROM messages WHERE text = 'bonjour'"), []string{"1"})
@@ -704,7 +704,7 @@ func TestVocalConvertedKeepsSessionIDs(t *testing.T) {
 		`{"t":1700000000.9999996,"type":"agent","resultat":"le rapport"}`+"\n",
 	)
 	out := f.migrate()
-	if !strings.Contains(out, "Lignes vocales converties : 2\n") || !strings.Contains(out, "Lignes vocales écartées (sessions oubliées) : 1\n") {
+	if !strings.Contains(out, "Voice lines converted: 2\n") || !strings.Contains(out, "Voice lines dropped (forgotten sessions): 1\n") {
 		t.Fatal(out)
 	}
 	if b, _ := os.ReadFile(filepath.Join(f.p.Journals(), "vocal.jsonl")); bytes.Contains(b, []byte("bonjour")) {
@@ -747,7 +747,7 @@ func TestVocalRowsOfTheOldIndexIndexedOnce(t *testing.T) {
 			converted, archived = "1", "0"
 		}
 		out := f.migrate()
-		if !strings.Contains(out, "Lignes vocales converties : "+converted+"\n") || !strings.Contains(out, "Messages archivés : "+archived+"\n") {
+		if !strings.Contains(out, "Voice lines converted: "+converted+"\n") || !strings.Contains(out, "Archived messages: "+archived+"\n") {
 			t.Fatalf("journal=%v:\n%s", journal, out)
 		}
 		equal(t, column(t, f.open(), "SELECT session_id||' '||ts||' '||role||' '||text FROM messages"),

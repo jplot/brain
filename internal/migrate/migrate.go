@@ -29,12 +29,12 @@ import (
 var rebuild = index.Rebuild
 
 var (
-	ErrHasMemories  = errors.New("paul.db contient déjà des souvenirs : la reprise doit se faire avant tout résumé")
-	ErrConcurrentDB = errors.New("paul.db a été recréé pendant la reprise : relancez-la")
+	ErrHasMemories  = errors.New("paul.db already contains memories: migration must happen before any summary")
+	ErrConcurrentDB = errors.New("paul.db was recreated during migration: run it again")
 )
 
 var (
-	errInterrupted = errors.New("interrompue avant la fin : rien n'est écrit, la copie de travail est effacée")
+	errInterrupted = errors.New("interrupted before the end: nothing is written, the working copy is erased")
 	kinds          = map[string]string{"sujet": "topic", "decision": "decision", "suspens": "pending", "fait": "fact"}
 )
 
@@ -142,28 +142,28 @@ func Run(old, root string, p paths.Paths, out io.Writer) (err error) {
 	// From here the import is done: Ctrl-C during the index rebuild stops paul as usual.
 	committed = true
 	stop()
-	fmt.Fprintf(out, "Reprise terminée depuis %s.\n", old)
+	fmt.Fprintf(out, "Migration finished from %s.\n", old)
 	if err := os.RemoveAll(stage); err != nil {
-		log.Printf("migrate : copie de travail non effacée : %v", err)
-		fmt.Fprintf(out, "La copie de l'ancienne base reste dans %s : à effacer à la main.\n", stage)
+		log.Printf("migrate: working copy not erased: %v", err)
+		fmt.Fprintf(out, "The copy of the old database remains in %s: erase it by hand.\n", stage)
 	}
 	if !c.rootSeen {
-		fmt.Fprintf(out, "Racine des projets absente de l'ancienne base : %s (option --root)\n", root)
+		fmt.Fprintf(out, "Projects root missing from the old database: %s (option --root)\n", root)
 	}
-	fmt.Fprintf(out, "Sessions résumées : %d\nÉpisodes : %d\nPoints : %d\nSujets créés : %d\nLignes vocales converties : %d\nMessages archivés : %d\n",
+	fmt.Fprintf(out, "Summarized sessions: %d\nEpisodes: %d\nPoints: %d\nSubjects created: %d\nVoice lines converted: %d\nArchived messages: %d\n",
 		c.sessions, c.episodes, c.points, c.subjects, vocal, c.archived)
 	if dropped > 0 {
-		fmt.Fprintf(out, "Lignes vocales écartées (sessions oubliées) : %d\n", dropped)
+		fmt.Fprintf(out, "Voice lines dropped (forgotten sessions): %d\n", dropped)
 	}
 	// The import is committed and paul.db exists, so a retry would be refused: exit 0 and let
 	// the next refresh index everything, its files table being empty.
 	stats, err := rebuild(p)
 	if err != nil {
-		log.Printf("reconstruction de l'index après la reprise échouée : %v", err)
-		fmt.Fprintln(out, "Index non reconstruit : il le sera au prochain lancement de paul (détail dans paul.log).")
+		log.Printf("index rebuild after migration failed: %v", err)
+		fmt.Fprintln(out, "Index not rebuilt: it will be at the next paul launch (details in paul.log).")
 		return nil
 	}
-	fmt.Fprintf(out, "Index reconstruit : %d fichiers, %d messages\n", stats.Files, stats.Messages)
+	fmt.Fprintf(out, "Index rebuilt: %d files, %d messages\n", stats.Files, stats.Messages)
 	return nil
 }
 
@@ -226,7 +226,7 @@ func commit(staged, p paths.Paths, journals []string) error {
 		path := filepath.Join(p.Journals(), name)
 		if err := os.Link(filepath.Join(staged.Journals(), name), path); err != nil {
 			if errors.Is(err, fs.ErrExist) {
-				err = fmt.Errorf("%s existe déjà : la reprise ne le remplace pas, déplacez-le puis relancez", path)
+				err = fmt.Errorf("%s already exists: migration does not replace it, move it and run again", path)
 			}
 			return undo(err)
 		}
@@ -263,7 +263,7 @@ func (r resolver) path(name string) string {
 func copyOld(old, dir string) (string, error) {
 	copied := filepath.Join(dir, "brain.db")
 	if err := copyFile(old, copied); errors.Is(err, fs.ErrNotExist) {
-		return "", fmt.Errorf("ancienne base introuvable : %s", old)
+		return "", fmt.Errorf("old database not found: %s", old)
 	} else if err != nil {
 		return "", err
 	}
@@ -338,7 +338,7 @@ func importBase(ctx context.Context, old, root string, staged paths.Paths, read 
 		return c, err
 	}
 	if busy != 0 {
-		return c, errors.New("checkpoint de la nouvelle base bloqué")
+		return c, errors.New("checkpoint of the new database blocked")
 	}
 	return c, nil
 }
@@ -422,7 +422,7 @@ func (m *mapper) resolve(path string) (string, bool, error) {
 func (m *mapper) repoOf(path string) (repo.Info, bool, error) {
 	info, ok, err := repo.Of(m.ctx, path)
 	if errors.Is(err, repo.ErrGit) {
-		return info, false, fmt.Errorf("git est nécessaire pour reconnaître les dépôts des anciens projets (%s) : %w", path, err)
+		return info, false, fmt.Errorf("git is required to recognize the repositories of the old projects (%s): %w", path, err)
 	}
 	return info, ok, err
 }
@@ -468,7 +468,7 @@ func (m *mapper) episodes(from *sql.Tx) error {
 		}
 		var paths []string
 		if err := json.Unmarshal([]byte(projects), &paths); err != nil {
-			return fmt.Errorf("épisode %d : projets illisibles : %w", id, err)
+			return fmt.Errorf("episode %d: unreadable projects: %w", id, err)
 		}
 		uid := db.NewUID()
 		if _, err := m.to.Exec(`INSERT INTO episodes(id, session_id, start_ts, end_ts, title, summary, created_at, summary_stale, uid, updated_at)
@@ -511,7 +511,7 @@ func (m *mapper) points(from *sql.Tx) error {
 		}
 		if _, err := m.to.Exec(`INSERT INTO points(id, episode_id, kind, subject_uid, text, importance, source_ts, created_at, closed_at, corrected, uid, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, episode, kinds[kind], subject, text, importance, source, created, closed, corrected, db.NewUID(), created); err != nil {
-			return fmt.Errorf("point %d : %w", id, err)
+			return fmt.Errorf("point %d: %w", id, err)
 		}
 		m.c.points++
 	}
