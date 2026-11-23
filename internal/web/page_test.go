@@ -162,7 +162,6 @@ func (pg *page) never(what, script string, args ...any) {
 	}
 }
 
-// card is a text the article holds, "" for the whole page; name is the aria-label, else the text.
 func (pg *page) press(card, name string) {
 	pg.t.Helper()
 	pg.until("bouton "+name+" dans "+card, `(card, name) => {

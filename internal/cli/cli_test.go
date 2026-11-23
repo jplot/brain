@@ -449,6 +449,9 @@ func TestMemoForTheCurrentRepoAndForANamedSubject(t *testing.T) {
 	contains(t, f.ok("memo"), "Sujet « widget »", "Utiliser sqlite")
 	contains(t, f.ok("memo", "--subject", "widget"), "Sujet « widget »", "Utiliser sqlite")
 	contains(t, f.fails(2, "memo", "--subject", "inconnu"), "sujet inconnu")
+	if n := f.count("SELECT count(*) FROM point_usage"); n != 0 {
+		t.Fatalf("paul memo a marqué %d points", n)
+	}
 	t.Chdir(t.TempDir())
 	contains(t, f.ok("memo"), "Dernières sessions :")
 	f.exec("DELETE FROM episode_subjects")

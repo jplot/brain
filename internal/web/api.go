@@ -580,16 +580,19 @@ func forgetSession(s *server, r *request) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	var release func()
-	for deadline := time.Now().Add(lockWait); release == nil; time.Sleep(50 * time.Millisecond) {
-		if release, _, err = lock.Writer(s.p.IndexLock(), false); err != nil {
+	for deadline := time.Now().Add(lockWait); ; time.Sleep(50 * time.Millisecond) {
+		release, acquired, err := lock.Writer(s.p.IndexLock(), false)
+		if err != nil {
 			return nil, err
 		}
-		if release == nil && time.Now().After(deadline) {
+		if acquired {
+			defer release()
+			break
+		}
+		if time.Now().After(deadline) {
 			return nil, fail(http.StatusServiceUnavailable, "la mémoire est occupée, réessaie dans un instant")
 		}
 	}
-	defer release()
 	id, err := search.ResolveSession(s.conn, ref)
 	if err != nil {
 		return nil, err
@@ -603,7 +606,8 @@ func forgetSession(s *server, r *request) (any, error) {
 	return done, nil
 }
 
-// The summarizer may set a parent between SetParent's cycle check and its write.
+// The summarizer may set a parent between SetParent's cycle check and its write, or create
+// a subject between rename's name check and its write.
 func (s *server) atomically(steps func(db.Querier) error) error {
 	conn, err := s.conn.Conn(background)
 	if err != nil {
@@ -642,10 +646,24 @@ func rename(s *server, r *request) (any, error) {
 	if name == "" {
 		return nil, fail(http.StatusBadRequest, "name manquant ou invalide")
 	}
-	if err := s.atomically(func(q db.Querier) error { return subjects.Rename(q, v[0], name) }); err != nil {
+	if err := s.atomically(func(q db.Querier) error { return renameUnique(q, v[0], name) }); err != nil {
 		return nil, err
 	}
 	return done, nil
+}
+
+// Two subjects with one name merge at the next summarize: the page asks for an explicit merge instead.
+func renameUnique(q db.Querier, uid, name string) error {
+	all, err := subjects.List(q)
+	if err != nil {
+		return err
+	}
+	for _, other := range all {
+		if other.UID != uid && subjects.Normalize(other.Name) == subjects.Normalize(name) {
+			return fail(http.StatusConflict, "un autre sujet s'appelle déjà « "+other.Name+" » : pour les réunir, utilise « Fusionner »")
+		}
+	}
+	return subjects.Rename(q, uid, name)
 }
 
 func merge(s *server, r *request) (any, error) {
@@ -675,7 +693,7 @@ func writeLink(s *server, r *request, write func(db.Querier, string, string, str
 	if err != nil {
 		return nil, err
 	}
-	if err := s.atomically(func(q db.Querier) error { return write(q, v[0], v[1], v[2], user) }); err != nil {
+	if err := write(s.conn, v[0], v[1], v[2], user); err != nil {
 		return nil, err
 	}
 	return done, nil

@@ -493,7 +493,7 @@ async function showMemo(mine) {
   const select = h("select", { "data-key": "memo-subject", onchange: (event) => pick(event.target.value) },
     subjectOptions(state.subjects, state.memoSubject, "Démarrage dans ce dossier"));
   mount(...heading("Le mémo",
-    "Exactement ce que Claude reçoit : au démarrage d’une session dans le dossier où paul web a été lancé, ou quand un message nomme un sujet."),
+    "Ce que Claude reçoit au démarrage d’une session dans le dossier où paul web a été lancé. Pour un sujet : l’index montré quand un message le nomme ; les points retenus peuvent alors différer, car ils suivent les mots du message."),
   h("label", { class: "field" }, "Mémo de", select), alert, empty, memo);
 
   async function pick(uid) {

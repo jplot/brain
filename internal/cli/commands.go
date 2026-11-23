@@ -367,7 +367,7 @@ func memoCmd(e *env, args []string) (int, error) {
 		if err != nil {
 			return 0, usagef("le dossier courant n'existe plus")
 		}
-		if text, err = memo.Start(conn, cwd, "", time.Now()); err != nil {
+		if text, err = memo.Preview(conn, cwd, time.Now()); err != nil {
 			return 0, err
 		}
 	}

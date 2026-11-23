@@ -129,9 +129,10 @@ func listen(p paths.Paths, cwd string) (*server, error) {
 		host: ln.Addr().String(), cwd: cwd, static: static}, nil
 }
 
-// A site that rebinds its own name to 127.0.0.1 (DNS rebinding) still sends that name as Host.
+// A site that rebinds its own name to 127.0.0.1 (DNS rebinding) still sends that name as Host;
+// an absolute-form request line puts its own host in r.Host and hides the Host header.
 func (s *server) trusted(r *http.Request, query url.Values) bool {
-	if r.Host != s.host {
+	if r.Host != s.host || r.URL.Host != "" {
 		return false
 	}
 	given := query.Get("token")

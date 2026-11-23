@@ -1,6 +1,7 @@
 package web
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -483,6 +484,20 @@ func TestForeignHostIs403(t *testing.T) {
 	}
 	if s, _ := subjects.Get(f.conn, w.a); s.Name != "Alpha" {
 		t.Fatal(s.Name)
+	}
+}
+
+func TestAbsoluteFormRequestWithForeignHostIs403(t *testing.T) {
+	f := newFixture(t)
+	conn, err := net.Dial("tcp", f.s.host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "GET http://%s/api/subjects?token=%s HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n", f.s.host, f.s.token)
+	status, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil || !strings.HasPrefix(status, "HTTP/1.1 403") {
+		t.Fatalf("%q %v", status, err)
 	}
 }
 
@@ -1297,6 +1312,15 @@ func TestRenameSubject(t *testing.T) {
 	f.status(t, f.post("/api/subjects/rename", obj{"uid": w.a, "name": " \u200b "}), 400)
 	f.status(t, f.post("/api/subjects/rename", obj{"uid": w.a}), 400)
 	f.status(t, f.post("/api/subjects/rename", obj{"uid": "inconnu", "name": "X"}), 404)
+	a := f.post("/api/subjects/rename", obj{"uid": w.a, "name": "BÉTA"})
+	f.status(t, a, 409)
+	if string(a.body) != `{"error":"un autre sujet s'appelle déjà « Beta » : pour les réunir, utilise « Fusionner »"}` {
+		t.Fatalf("%s", a.body)
+	}
+	if s, _ := subjects.Get(f.conn, w.a); s.Name != "Gamma rayon" {
+		t.Fatal(s.Name)
+	}
+	f.status(t, f.post("/api/subjects/rename", obj{"uid": w.a, "name": "GAMMA rayon"}), 200)
 }
 
 func TestMergeSubjects(t *testing.T) {
