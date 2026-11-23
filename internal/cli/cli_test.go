@@ -316,6 +316,19 @@ func TestSessionShowsSummaryPointsAndMessages(t *testing.T) {
 		fmt.Sprintf("  %d  fact  Atelier  Les pommes sont rouges\n", id), "\n2026-10-27 00:45  user\nune pomme")
 }
 
+func TestSessionHidesSummaryAfterForgettingAPoint(t *testing.T) {
+	f := newFixture(t)
+	f.say(s1, "une pomme")
+	f.ok("index")
+	ep := f.episode(s1, "Titre périmé", "Résumé périmé")
+	f.point(ep, "", "fact", "Reste")
+	id := f.point(ep, "", "fact", "Oublié")
+	f.ok("forget", "point", fmt.Sprint(id), "--yes")
+	out := f.ok("session", s1)
+	lacks(t, out, "Titre périmé", "Résumé périmé")
+	contains(t, out, "Reste")
+}
+
 func TestSessionUntitledAndMissing(t *testing.T) {
 	f := newFixture(t)
 	f.say(s1, "une pomme")

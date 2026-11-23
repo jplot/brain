@@ -200,7 +200,6 @@ type episodeJSON struct {
 	Subjects []string `json:"subjects"`
 }
 
-// A summary waiting to be redone may still quote a forgotten point.
 func (s *server) shown(sessionID string) ([]episodeJSON, error) {
 	all, err := memory.VisibleEpisodes(s.conn, sessionID)
 	if err != nil {
@@ -208,7 +207,7 @@ func (s *server) shown(sessionID string) ([]episodeJSON, error) {
 	}
 	out := []episodeJSON{}
 	for _, e := range all {
-		if !e.SummaryStale && e.Title != nil && *e.Title != "" {
+		if e.Title != nil && *e.Title != "" {
 			out = append(out, episodeJSON{e.ID, e.StartTS, e.EndTS, e.Title, e.Summary, list(e.Subjects)})
 		}
 	}

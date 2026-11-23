@@ -209,8 +209,10 @@ func queryPoints(q db.Querier, query string, args []any) ([]Point, error) {
 	return out, rows.Err()
 }
 
+// A summary waiting to be redone may still quote a forgotten point.
 func VisibleEpisodes(q db.Querier, sessionID string) ([]Episode, error) {
-	rows, err := q.QueryContext(background, "SELECT id, uid, session_id, start_ts, end_ts, title, summary,"+
+	rows, err := q.QueryContext(background, "SELECT id, uid, session_id, start_ts, end_ts,"+
+		" CASE WHEN summary_stale = 0 THEN title END, CASE WHEN summary_stale = 0 THEN summary END,"+
 		" created_at, summary_stale, updated_at,"+
 		" (SELECT json_group_array(name) FROM (SELECT s.name FROM episode_subjects es JOIN subjects s ON s.uid = es.subject_uid"+
 		" WHERE es.episode_uid = episodes.uid ORDER BY s.name, s.uid))"+
