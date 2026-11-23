@@ -846,3 +846,47 @@ func TestSynthesisReadersSkipStale(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestForgetSessionDropsTheGraphItCreated(t *testing.T) {
+	f := newFixture(t)
+	gone := f.episode("s-oubli", t0, "t", "r")
+	kept := f.episode("s-reste", "2026-01-02T10:00:00.000Z", "t", "r")
+	invented, err := subjects.Create(f.db, "Personne Inventée", []string{"avocat"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, family, office := f.subject("Partagé", nil), f.subject("Famille", nil), f.subject("Cabinet", nil)
+	origin := subjects.Origin{EpisodeUID: new("e1")}
+	for _, err := range []error{subjects.SetParent(f.db, invented, office, subjects.Origin{EpisodeUID: new("e2")}),
+		subjects.SetParent(f.db, shared, family, origin), subjects.Link(f.db, invented, "about", shared, origin)} {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.exec("INSERT INTO episode_subjects VALUES ('e1', ?), ('e1', ?), ('e1', ?), ('e2', ?)", invented, shared, office, family)
+	f.point(gone, pt{subject: invented})
+	f.point(gone, pt{subject: shared})
+	f.point(kept, pt{subject: shared})
+	f.point(kept, pt{subject: family})
+	if err := ForgetSession(f.db, f.p, "s-oubli"); err != nil {
+		t.Fatal(err)
+	}
+	for _, uid := range []string{invented, office} {
+		if _, err := subjects.Get(f.db, uid); !errors.Is(err, subjects.ErrNotFound) {
+			t.Fatal("subject of the forgotten session kept", err)
+		}
+	}
+	if found, _ := subjects.ByTerms(f.db, []string{"avocat", "personne inventee"}); len(found) != 0 {
+		t.Fatal("alias still injects", found)
+	}
+	if n := f.count("SELECT count(*) FROM links") + f.count("SELECT count(*) FROM episode_subjects WHERE episode_uid = 'e1'"); n != 0 {
+		t.Fatalf("%d graph rows of the forgotten episode", n)
+	}
+	got, err := subjects.Get(f.db, shared)
+	if err != nil || got.ParentUID != nil {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if _, err := subjects.Get(f.db, family); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -466,12 +466,19 @@ func ForgetSession(q db.Querier, p paths.Paths, sessionID string) error {
 			" JOIN episodes e ON e.id = p.episode_id WHERE e.session_id = ?)", sessionID); err != nil {
 			return err
 		}
+		touched, err := dropGraph(c, sessionID)
+		if err != nil {
+			return err
+		}
 		for _, table := range [][2]string{{"messages", "session_id"}, {"sessions", "id"},
 			{"episodes", "session_id"}, {"summary_failures", "session_id"},
 			{"pending_paths", "session_id"}, {"session_repos", "session_id"}, {"injected", "session_id"}} {
 			if _, err := c.ExecContext(background, "DELETE FROM "+table[0]+" WHERE "+table[1]+" = ?", sessionID); err != nil {
 				return err
 			}
+		}
+		if err := dropOrphans(c, touched); err != nil {
+			return err
 		}
 		for _, fts := range []string{"messages_fts", "points_fts"} {
 			if _, err := c.ExecContext(background, "INSERT INTO "+fts+"("+fts+") VALUES ('optimize')"); err != nil {
@@ -486,6 +493,59 @@ func ForgetSession(q db.Querier, p paths.Paths, sessionID string) error {
 		_, err = c.ExecContext(background, "DELETE FROM files WHERE path = ?", p.Archive())
 		return err
 	})
+}
+
+const sessionEpisodes = "(SELECT uid FROM episodes WHERE session_id = ?1)"
+
+func dropGraph(c *sql.Conn, sessionID string) (touchedJSON string, err error) {
+	if err := c.QueryRowContext(background, "SELECT json_group_array(uid) FROM ("+
+		"SELECT p.subject_uid AS uid FROM points p JOIN episodes e ON e.id = p.episode_id WHERE e.session_id = ?1"+
+		" AND p.subject_uid IS NOT NULL"+
+		" UNION SELECT subject_uid FROM episode_subjects WHERE episode_uid IN "+sessionEpisodes+
+		" UNION SELECT source_uid FROM links WHERE origin = 'model' AND episode_uid IN "+sessionEpisodes+
+		" UNION SELECT target_uid FROM links WHERE origin = 'model' AND episode_uid IN "+sessionEpisodes+
+		" UNION SELECT parent_uid FROM subjects WHERE parent_origin = 'model' AND parent_episode_uid IN "+sessionEpisodes+")",
+		sessionID).Scan(&touchedJSON); err != nil {
+		return "", err
+	}
+	for _, step := range []string{
+		"DELETE FROM links WHERE origin = 'model' AND episode_uid IN " + sessionEpisodes,
+		"UPDATE subjects SET parent_uid = NULL, parent_origin = NULL, parent_episode_uid = NULL, updated_at = ?2" +
+			" WHERE parent_origin = 'model' AND parent_episode_uid IN " + sessionEpisodes,
+		"DELETE FROM episode_subjects WHERE episode_uid IN " + sessionEpisodes,
+	} {
+		if _, err := c.ExecContext(background, step, sessionID, now()); err != nil {
+			return "", err
+		}
+	}
+	return touchedJSON, nil
+}
+
+// A subject the forgotten session alone created would keep its name and aliases matching prompts.
+// A touched parent empties only once its touched child is gone, hence the passes.
+func dropOrphans(c *sql.Conn, touchedJSON string) error {
+	for {
+		res, err := c.ExecContext(background, "DELETE FROM subjects WHERE kind = 'subject'"+
+			" AND uid IN (SELECT value FROM json_each(?))"+
+			" AND NOT EXISTS (SELECT 1 FROM points p WHERE p.subject_uid = subjects.uid)"+
+			" AND NOT EXISTS (SELECT 1 FROM episode_subjects es WHERE es.subject_uid = subjects.uid)"+
+			" AND NOT EXISTS (SELECT 1 FROM subjects c WHERE c.parent_uid = subjects.uid)"+
+			" AND NOT EXISTS (SELECT 1 FROM links l WHERE subjects.uid IN (l.source_uid, l.target_uid))"+
+			" AND NOT EXISTS (SELECT 1 FROM syntheses y WHERE y.subject_uid = subjects.uid)", touchedJSON)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			break
+		}
+	}
+	_, err := c.ExecContext(background, "DELETE FROM subject_terms WHERE subject_uid IN (SELECT value FROM json_each(?))"+
+		" AND subject_uid NOT IN (SELECT uid FROM subjects)", touchedJSON)
+	return err
 }
 
 // Only the archive is rewritten: paul migrate wrote it, while the other journals belong to
