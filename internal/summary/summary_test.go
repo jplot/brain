@@ -690,13 +690,16 @@ func TestFailureLeavesNothingAndCounts(t *testing.T) {
 	}
 }
 
-func TestFailureLogsTypeNotText(t *testing.T) {
-	f := newFixture(t)
-	f.seed("s1", msg{t0, "user", "CONFIDENTIEL"})
-	buf := captureLog(t)
-	f.summarize("s1", newModel(&Error{msg: "x"}).run)
-	if !strings.Contains(buf.String(), "summary.Error") || strings.Contains(buf.String(), "CONFIDENTIEL") {
-		t.Fatal(buf.String())
+func TestFailureLogsReasonNotText(t *testing.T) {
+	for want, err := range map[string]error{"(x)": &Error{msg: "x"}, "(*errors.errorString)": errors.New("/chemin/secret")} {
+		f := newFixture(t)
+		f.seed("s1", msg{t0, "user", "CONFIDENTIEL"})
+		buf := captureLog(t)
+		f.summarize("s1", newModel(err).run)
+		if got := buf.String(); !strings.Contains(got, "summary failed: s1 "+want) || strings.Contains(got, "CONFIDENTIEL") ||
+			strings.Contains(got, "secret") {
+			t.Fatal(got)
+		}
 	}
 }
 
@@ -2125,7 +2128,7 @@ func TestRunClaudeFailsCleanly(t *testing.T) {
 			setup(t)
 			_, err := runner("PROMPT-SECRET", "s", map[string]any{})
 			var e *Error
-			if !errors.As(err, &e) || err.Error() != "claude inutilisable" {
+			if !errors.As(err, &e) || err.Error() != "claude unusable" {
 				t.Fatal(err)
 			}
 		})

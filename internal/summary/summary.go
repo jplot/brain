@@ -389,7 +389,7 @@ func countAttempt(conn *sql.DB, sessionID string, now time.Time) (counted bool, 
 }
 
 func fail(conn *sql.DB, sessionID string, now time.Time, c *calls, err error) Outcome {
-	log.Printf("summary failed: %s (%T)", sessionID, err)
+	log.Printf("summary failed: %s %s", sessionID, reason(err))
 	touchFailure(conn, sessionID, now)
 	return Outcome{Status: Failed, CostUSD: c.cost, SessionID: sessionID}
 }

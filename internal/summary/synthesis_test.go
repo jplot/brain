@@ -562,7 +562,7 @@ func TestSynthesisFailureLogNamesSubject(t *testing.T) {
 	log.SetOutput(&buf)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	Synthesize(f.db, camille, f.home, newModel(&Error{msg: "x"}).run, now0)
-	if got := buf.String(); !strings.Contains(got, "synthesis failed: "+f.home) || strings.Contains(got, "summary failed") {
+	if got := buf.String(); !strings.Contains(got, "synthesis failed: "+f.home+" (x)") || strings.Contains(got, "summary failed") {
 		t.Fatal(got)
 	}
 }

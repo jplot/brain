@@ -40,6 +40,15 @@ type Error struct {
 
 func (e *Error) Error() string { return e.msg }
 
+// Any other error's text can quote a path or a query, so only its type reaches paul.log.
+func reason(err error) string {
+	var e *Error
+	if errors.As(err, &e) {
+		return "(" + e.msg + ")"
+	}
+	return fmt.Sprintf("(%T)", err)
+}
+
 func RunClaude(name, level string) Runner {
 	return func(prompt, system string, schema any) (Result, error) {
 		return runClaude(name, level, prompt, system, schema)
@@ -66,7 +75,7 @@ func runClaude(name, level, prompt, system string, schema any) (Result, error) {
 	}
 	var exit *exec.ExitError
 	if err != nil && !errors.As(err, &exit) {
-		return Result{}, &Error{msg: "claude inutilisable"}
+		return Result{}, &Error{msg: "claude unusable"}
 	}
 	var payload map[string]any
 	json.Unmarshal(stdout.Bytes(), &payload)

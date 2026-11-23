@@ -164,7 +164,7 @@ func Synthesize(conn *sql.DB, user, subjectUID string, run Runner, now time.Time
 	c := &calls{run: run}
 	out, err := synthesize(conn, user, subjectUID, c, now)
 	if err != nil {
-		log.Printf("synthesis failed: %s (%T)", subjectUID, err)
+		log.Printf("synthesis failed: %s %s", subjectUID, reason(err))
 		touchFailure(conn, failureKey+subjectUID, now)
 		out = Outcome{Status: Failed, CostUSD: c.cost}
 	}
