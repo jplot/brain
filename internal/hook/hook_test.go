@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -33,10 +35,11 @@ func TestMain(m *testing.M) {
 }
 
 type fixture struct {
-	t    *testing.T
-	p    paths.Paths
-	rec  string
-	logs *bytes.Buffer
+	t        *testing.T
+	p        paths.Paths
+	rec      string
+	logs     *bytes.Buffer
+	launched atomic.Int32
 }
 
 // newFixture replaces the re-executed binary by a script that records its arguments, its pid and its process group.
@@ -49,16 +52,40 @@ func newFixture(t *testing.T) *fixture {
 	if err := os.WriteFile(exe, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The first exec of a fresh script took over 2 s under parallel load on macOS.
+	warmup := exec.Command(exe)
+	warmup.Env = []string{"PAUL_HOOK_TEST_REC=" + filepath.Join(dir, "warmup")}
+	if err := warmup.Run(); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PAUL_HOOK_TEST_REC", f.rec)
 	t.Setenv("PAUL_HOOK_TEST_EXE", exe)
 	t.Setenv("PAUL_HOME", f.p.Home)
 	t.Setenv("PAUL_TRANSCRIPTS", f.p.Transcripts)
 	saved := executable
-	executable = func() (string, error) { return exe, nil }
+	executable = func() (string, error) { f.launched.Add(1); return exe, nil }
 	savedLog := log.Writer()
 	log.SetOutput(f.logs)
-	t.Cleanup(func() { executable = saved; log.SetOutput(savedLog) })
+	t.Cleanup(func() { executable = saved; log.SetOutput(savedLog); f.waitChildren() })
 	return f
+}
+
+// A detached child still writing in the temporary folder makes its removal fail.
+func (f *fixture) waitChildren() {
+	deadline := time.Now().Add(10 * time.Second)
+	var raw []byte
+	for time.Now().Before(deadline) {
+		if raw, _ = os.ReadFile(f.rec); bytes.Count(raw, []byte("\n")) >= int(f.launched.Load()) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		pid, err := strconv.Atoi(strings.SplitN(line, " ", 2)[0])
+		for err == nil && time.Now().Before(deadline) && syscall.Kill(pid, 0) == nil {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 }
 
 func (f *fixture) db() *sql.DB {
@@ -83,7 +110,7 @@ func (f *fixture) run(event, stdin string) (string, time.Duration) {
 
 func (f *fixture) spawned() []string {
 	f.t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if raw, _ := os.ReadFile(f.rec); len(raw) > 0 {
 			var lines []string
