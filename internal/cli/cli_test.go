@@ -539,9 +539,16 @@ func TestOldCommandsAreUnknown(t *testing.T) {
 
 func TestNotYetAvailableCommands(t *testing.T) {
 	f := newFixture(t)
-	for _, name := range []string{"sync", "migrate"} {
-		contains(t, f.fails(2, name), "pas encore disponible")
-	}
+	contains(t, f.fails(2, "sync"), "pas encore disponible")
+}
+
+func TestMigrateRefusals(t *testing.T) {
+	f := newFixture(t)
+	missing := filepath.Join(t.TempDir(), "brain.db")
+	contains(t, f.fails(2, "migrate", "--from", missing), "ancienne base introuvable : "+missing)
+	os.WriteFile(missing, nil, 0o600)
+	f.ok("index")
+	contains(t, f.fails(2, "migrate", "--from", missing), "paul.db existe déjà")
 }
 
 type lockedBuffer struct {
