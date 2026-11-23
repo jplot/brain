@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -392,8 +393,11 @@ func flush(conn *sql.Conn) error {
 	if _, err := conn.ExecContext(background, "PRAGMA busy_timeout=0"); err != nil {
 		return err
 	}
-	var busy, log, done int
-	err := conn.QueryRowContext(background, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &log, &done)
+	var busy, pages, moved int
+	err := conn.QueryRowContext(background, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &pages, &moved)
+	if err == nil && busy == 1 {
+		log.Printf("point de contrôle occupé : %d pages sur %d restent dans le WAL", pages-moved, pages)
+	}
 	_, restore := conn.ExecContext(background, fmt.Sprintf("PRAGMA busy_timeout=%d", timeout))
 	return errors.Join(err, restore)
 }

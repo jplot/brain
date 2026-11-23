@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -565,12 +566,18 @@ func TestForgetDoesNotBlockOnBusyCheckpoint(t *testing.T) {
 	if err := tx.QueryRow("SELECT count(*) FROM points").Scan(&n); err != nil {
 		t.Fatal(err)
 	}
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	start := time.Now()
 	if err := ForgetPoint(f.db, id); err != nil {
 		t.Fatal(err)
 	}
 	if time.Since(start) > 2*time.Second {
 		t.Fatalf("forget waited %v on the busy checkpoint", time.Since(start))
+	}
+	if !strings.Contains(logged.String(), "point de contrôle") {
+		t.Fatalf("log %q", logged.String())
 	}
 }
 
