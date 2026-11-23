@@ -674,10 +674,11 @@ func catchup(p paths.Paths, o Options) ([]Outcome, error) {
 	if err != nil {
 		return nil, err
 	}
+	user := config.UserName()
 	var outcomes []Outcome
 	// Oldest first: newest first left 48 pending points open for 3 closed over 20 real sessions.
 	for _, session := range slices.Backward(sessions) {
-		outcomes = append(outcomes, SummarizeSession(conn, config.UserName(), session, runner, time.Time{}))
+		outcomes = append(outcomes, SummarizeSession(conn, user, session, runner, time.Time{}))
 		if outcomes[len(outcomes)-1].Status == Busy {
 			break
 		}

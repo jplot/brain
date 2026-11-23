@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -23,6 +24,10 @@ func fakeGit(t *testing.T, script string) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
+	// The first exec of a fresh script took over 2 s under parallel load on macOS.
+	if err := exec.Command(filepath.Join(dir, "git")).Run(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestLoadAbsentGivesZeroConfig(t *testing.T) {
@@ -61,6 +66,13 @@ func TestLoadReadsSync(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsUnknownEncryption(t *testing.T) {
+	_, err := Load(write(t, "[sync]\nrepository = \"git@example.com:a/b.git\"\nencryption = \"gpg\"\n"))
+	if err == nil || !strings.Contains(err.Error(), "sync.encryption") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestUserNameFirstWord(t *testing.T) {
 	fakeGit(t, "echo 'Camille Dupont'")
 	if got := UserName(); got != "Camille" {
@@ -69,7 +81,7 @@ func TestUserNameFirstWord(t *testing.T) {
 }
 
 func TestUserNameFallback(t *testing.T) {
-	fakeGit(t, "exit 0")
+	fakeGit(t, "echo")
 	if got := UserName(); got != "l'utilisateur" {
 		t.Fatalf("got %q", got)
 	}

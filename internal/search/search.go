@@ -1,4 +1,4 @@
-// Package search answers the read side of the memory: full-text search and the session views,
+// Package search answers the read side of the memory: full-text search and the session views.
 package search
 
 import (

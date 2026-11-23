@@ -211,8 +211,17 @@ func TestAccessToProDoesNotOpenSecondPro(t *testing.T) {
 	t.Skip("Task 9")
 }
 
-func TestSummaryHiddenWhenEpisodeLeavesScope(t *testing.T) {
-	t.Skip("Task 9")
+func TestEpisodesCarryTitleAndSummary(t *testing.T) {
+	f := newFixture(t)
+	f.episode("s1", "2026-01-01T10:00:00.000Z", "premier", "secret")
+	f.episode("s1", "2026-01-01T11:00:00.000Z", "second", "ok")
+	got, err := VisibleEpisodes(f.db, "s1")
+	if err != nil || len(got) != 2 {
+		t.Fatalf("%v %v", got, err)
+	}
+	if *got[0].Title != "premier" || *got[0].Summary != "secret" || *got[1].Title != "second" || *got[1].Summary != "ok" {
+		t.Fatalf("%+v", got)
+	}
 }
 
 func TestCorrectionMarksPoint(t *testing.T) {

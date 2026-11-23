@@ -11,20 +11,18 @@ const usage = `paul : mémoire persistante pour Claude Code
 
 Usage : paul <commande> [options]
 
-  search <mots>                 --project --label --since --until --limit --everywhere
-  souvenirs [mots]              --kind --project --label --open --limit --everywhere
+  search <mots>                 --subject --since --until --limit
+  souvenirs [mots]              --kind --subject --open --history --limit
   session <id>
   day <AAAA-MM-JJ>
-  projects                      --everywhere
-  label <projet> personal|work|unsorted
-  access <lecteur> <cible>      --revoke --both-ways
-  memo                          --project --everywhere
+  subjects [mots]               l'arbre des sujets et leurs liens
+  memo                          --subject
   summarize                     --session --limit --all --force
-  forget point|session <id>     --yes --everywhere
+  forget point|session <id>     --yes
   index
   rebuild
   web
-  hook start|end
+  hook start|prompt|end
   migrate
   sync                          --new-key
 `

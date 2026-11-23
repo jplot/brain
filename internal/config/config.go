@@ -37,6 +37,9 @@ func Load(path string) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("configuration %s : clé inconnue %s", path, strings.Join(keys, ", "))
 	}
+	if cfg.Sync != nil && cfg.Sync.Encryption != "" && cfg.Sync.Encryption != "age" {
+		return Config{}, fmt.Errorf("configuration %s : sync.encryption vaut %q, attendu age ou vide", path, cfg.Sync.Encryption)
+	}
 	return cfg, nil
 }
 

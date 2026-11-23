@@ -360,16 +360,35 @@ func (w *world) mixed() {
 	w.add(w.dir("C"), "mix", "depuis C", "2026-10-21T09:00:00.000Z", aiTitle("mix", "Titre mixte"))
 }
 
-func TestSessionShowsOnlyWhatIsVisible(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestListAndDayDoNotLeakDates(t *testing.T) {
-	t.Skip("Task 9")
-}
-
 func TestSessionOutsideScope(t *testing.T) {
 	t.Skip("Task 9")
+}
+
+func TestSessionViewSpansAllMessages(t *testing.T) {
+	w := newWorld(t)
+	w.mixed()
+	row, msgs := w.view("mix")
+	same(t, texts(msgs), []string{"depuis A", "depuis C"})
+	same(t, row.Messages, 2)
+	same(t, row.StartedAt, "2026-10-20T08:00:00.000Z")
+	same(t, row.EndedAt, "2026-10-21T09:00:00.000Z")
+	if row.Title == nil || *row.Title != "Titre mixte" {
+		t.Fatalf("title %v", row.Title)
+	}
+}
+
+func TestListAndDayRowsCarrySpan(t *testing.T) {
+	w := newWorld(t)
+	w.mixed()
+	want := []any{"2026-10-20T08:00:00.000Z", "2026-10-21T09:00:00.000Z", 2, "Titre mixte"}
+	got := func(r SessionRow) []any { return []any{r.StartedAt, r.EndedAt, r.Messages, *r.Title} }
+	rows := w.list(ListFilter{})
+	same(t, len(rows), 1)
+	same(t, got(rows[0]), want)
+	rows = w.day(day(t, time.UTC, 2026, 10, 21))
+	same(t, len(rows), 1)
+	same(t, got(rows[0]), want)
+	same(t, len(w.day(day(t, time.UTC, 2026, 10, 22))), 0)
 }
 
 func TestSessionWithoutVisibleMessageIsAbsent(t *testing.T) {
@@ -475,10 +494,6 @@ func TestListSortsOnLastMessage(t *testing.T) {
 	w.add(w.dir("A"), "s2", "c", "2026-10-22T08:00:00.000Z")
 	same(t, ids(w.list(ListFilter{})), []string{"s1", "s2"})
 	same(t, ids(w.list(ListFilter{Before: "2026-10-23T00:00:00.000Z"})), []string{"s2"})
-}
-
-func TestLabelsAndSessionStart(t *testing.T) {
-	t.Skip("Task 9")
 }
 
 func TestNames(t *testing.T) {

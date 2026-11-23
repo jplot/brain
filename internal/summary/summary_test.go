@@ -56,6 +56,11 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	os.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// The first exec of a fresh script took over 2 s under parallel load on macOS.
+	if err := exec.Command(filepath.Join(dir, "git")).Run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
@@ -724,7 +729,33 @@ func TestInvalidOutputIsFailure(t *testing.T) {
 }
 
 func TestClosesOnlyShownIDs(t *testing.T) {
-	t.Skip("Task 10")
+	f := newFixture(t)
+	episode := f.oldEpisode("Vieux résumé")
+	var all []int64
+	for range MaxOpenPoints + 1 {
+		all = append(all, f.openPoint(episode))
+	}
+	shown, hidden := all[0], all[MaxOpenPoints]
+	f.seed("s1", greeting...)
+	m := newModel(with(answer(), "closes", ids(shown, hidden, 99999)))
+	f.summarize("s1", m.run)
+	at := now0.Format("2006-01-02T15:04:05.000Z")
+	for _, p := range f.points() {
+		switch p.id {
+		case shown:
+			if p.closedAt.String != at || p.updatedAt != at {
+				t.Fatalf("%+v", p)
+			}
+		case hidden:
+			if p.closedAt.Valid || p.updatedAt != t0 {
+				t.Fatalf("%+v", p)
+			}
+		}
+	}
+	prompt := m.calls[0].prompt
+	if !strings.Contains(prompt, fmt.Sprintf("#%d À faire", shown)) || strings.Contains(prompt, fmt.Sprintf("#%d ", hidden)) {
+		t.Fatal(prompt)
+	}
 }
 
 func TestCorrectedPointNeverClosed(t *testing.T) {

@@ -260,8 +260,14 @@ func TestDisappearedFileKeepsItsMessages(t *testing.T) {
 	}
 }
 
-func TestMissingJournalIsSkipped(t *testing.T) {
+func TestDanglingJournalIsSkipped(t *testing.T) {
 	f := newFixture(t)
+	if err := os.MkdirAll(f.p.Journals(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(f.p.Home, "fantome"), filepath.Join(f.p.Journals(), "x.jsonl")); err != nil {
+		t.Fatal(err)
+	}
 	if stats := f.all(); stats != (Stats{}) {
 		t.Fatalf("stats %+v", stats)
 	}
