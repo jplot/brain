@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS links(
     target_uid TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
     origin TEXT NOT NULL CHECK(origin IN ('model','user')), episode_uid TEXT,
     updated_at TEXT NOT NULL, PRIMARY KEY(source_uid, type, target_uid));
+CREATE TABLE IF NOT EXISTS subject_terms(
+    term TEXT NOT NULL, subject_uid TEXT NOT NULL, PRIMARY KEY(term, subject_uid)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS merged(
     from_uid TEXT PRIMARY KEY, into_uid TEXT NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS episodes(

@@ -379,6 +379,7 @@ func merge(q db.Querier, from, into string) error {
 	at := now()
 	steps := [][]any{
 		{"DELETE FROM subjects WHERE uid = ?", from},
+		{"DELETE FROM subject_terms WHERE subject_uid = ?", from},
 		{"UPDATE subjects SET kind = ?, repo = ?, aliases = ?, parent_uid = ?, parent_origin = ?, parent_episode_uid = ?, updated_at = ? WHERE uid = ?",
 			i.kind, i.repo, encode(union(i.name, i.aliases, f.aliases, []string{f.name})), i.parent, i.origin, i.episode, at, into},
 		{"UPDATE subjects SET parent_uid = ?, updated_at = ? WHERE parent_uid = ?", into, at, from},
@@ -399,6 +400,9 @@ func merge(q db.Querier, from, into string) error {
 		if _, err := q.ExecContext(bg, step[0].(string), step[1:]...); err != nil {
 			return err
 		}
+	}
+	if err := reindex(q, into); err != nil {
+		return err
 	}
 	if drop != "" {
 		if _, err := q.ExecContext(bg, "UPDATE subjects SET parent_uid = NULL, parent_episode_uid = NULL, updated_at = ? WHERE uid = ?", at, drop); err != nil {

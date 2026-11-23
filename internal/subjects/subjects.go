@@ -117,34 +117,97 @@ func List(q db.Querier) ([]Subject, error) { return query(q, "ORDER BY name, uid
 
 // FindByTerm also takes a uid, so a caller can pass what the user typed.
 func FindByTerm(q db.Querier, term string) ([]Subject, error) {
-	all, err := query(q, "ORDER BY uid")
+	return query(q, "WHERE uid = ?1 OR uid IN (SELECT subject_uid FROM subject_terms WHERE term = ?2) ORDER BY uid", term, Normalize(term))
+}
+
+// ByTerms maps each normalized term to the subjects named or aliased by it, in one indexed query.
+func ByTerms(q db.Querier, terms []string) (map[string][]Subject, error) {
+	raw, err := json.Marshal(terms)
 	if err != nil {
 		return nil, err
 	}
-	key := Normalize(term)
-	var found []Subject
-	for _, s := range all {
-		match := s.UID == term || Normalize(s.Name) == key
-		for _, alias := range s.Aliases {
-			match = match || Normalize(alias) == key
+	rows, err := q.QueryContext(bg, "SELECT t.term, s.uid, s.kind, s.name, s.aliases, s.repo, s.parent_uid, s.updated_at"+
+		" FROM subject_terms t JOIN subjects s ON s.uid = t.subject_uid"+
+		" WHERE t.term IN (SELECT value FROM json_each(?)) ORDER BY t.term, s.uid", string(raw))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]Subject{}
+	for rows.Next() {
+		var term string
+		var s Subject
+		var aliases string
+		var repo, parent sql.NullString
+		if err := rows.Scan(&term, &s.UID, &s.Kind, &s.Name, &aliases, &repo, &parent, &s.UpdatedAt); err != nil {
+			return nil, err
 		}
-		if match {
-			found = append(found, s)
+		if repo.Valid {
+			s.Repo = &repo.String
+		}
+		if parent.Valid {
+			s.ParentUID = &parent.String
+		}
+		if err := json.Unmarshal([]byte(aliases), &s.Aliases); err != nil {
+			return nil, err
+		}
+		out[term] = append(out[term], s)
+	}
+	return out, rows.Err()
+}
+
+// reindex runs after every write of a name or an alias: the hook looks terms up here, never in Go.
+func reindex(q db.Querier, uid string) error {
+	s, err := Get(q, uid)
+	if err != nil {
+		return err
+	}
+	if _, err := q.ExecContext(bg, "DELETE FROM subject_terms WHERE subject_uid = ?", uid); err != nil {
+		return err
+	}
+	for _, name := range append([]string{s.Name}, s.Aliases...) {
+		if term := Normalize(name); term != "" {
+			if _, err := q.ExecContext(bg, "INSERT OR IGNORE INTO subject_terms(term, subject_uid) VALUES (?, ?)", term, uid); err != nil {
+				return err
+			}
 		}
 	}
-	return found, nil
+	return nil
+}
+
+// RebuildTerms fills subject_terms for subjects written before the table existed or by a sync.
+func RebuildTerms(q db.Querier) error {
+	if _, err := q.ExecContext(bg, "DELETE FROM subject_terms"); err != nil {
+		return err
+	}
+	all, err := List(q)
+	if err != nil {
+		return err
+	}
+	for _, s := range all {
+		if err := reindex(q, s.UID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // EnsureRepo relies on UNIQUE(repo): two indexers racing on the same new
 // repository both insert, one is ignored, both read the same uid.
 func EnsureRepo(q db.Querier, identity, name string) (string, error) {
 	at := now()
-	if _, err := q.ExecContext(bg, "INSERT OR IGNORE INTO subjects(uid, kind, name, aliases, repo, created_at, updated_at) VALUES (?, 'repo', ?, '[]', ?, ?, ?)",
-		db.NewUID(), name, identity, at, at); err != nil {
+	res, err := q.ExecContext(bg, "INSERT OR IGNORE INTO subjects(uid, kind, name, aliases, repo, created_at, updated_at) VALUES (?, 'repo', ?, '[]', ?, ?, ?)",
+		db.NewUID(), name, identity, at, at)
+	if err != nil {
 		return "", err
 	}
 	var uid string
-	err := q.QueryRowContext(bg, "SELECT uid FROM subjects WHERE repo = ?", identity).Scan(&uid)
+	if err := q.QueryRowContext(bg, "SELECT uid FROM subjects WHERE repo = ?", identity).Scan(&uid); err != nil {
+		return "", err
+	}
+	if n, _ := res.RowsAffected(); n == 1 {
+		err = reindex(q, uid)
+	}
 	return uid, err
 }
 
@@ -168,7 +231,10 @@ func Create(q db.Querier, name string, aliases []string, parent *string) (string
 	uid, at := db.NewUID(), now()
 	_, err = q.ExecContext(bg, "INSERT INTO subjects(uid, kind, name, aliases, parent_uid, parent_origin, created_at, updated_at) VALUES (?, 'subject', ?, ?, ?, ?, ?, ?)",
 		uid, name, encode(union(name, aliases)), parent, origin, at, at)
-	return uid, err
+	if err != nil {
+		return "", err
+	}
+	return uid, reindex(q, uid)
 }
 
 func Rename(q db.Querier, uid, name string) error {
@@ -179,7 +245,7 @@ func Rename(q db.Querier, uid, name string) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	return nil
+	return reindex(q, uid)
 }
 
 func AddAliases(q db.Querier, uid string, aliases []string) error {
@@ -192,5 +258,8 @@ func AddAliases(q db.Querier, uid string, aliases []string) error {
 		return nil
 	}
 	_, err = q.ExecContext(bg, "UPDATE subjects SET aliases = ?, updated_at = ? WHERE uid = ?", encode(merged), now(), uid)
-	return err
+	if err != nil {
+		return err
+	}
+	return reindex(q, uid)
 }

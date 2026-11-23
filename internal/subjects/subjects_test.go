@@ -819,3 +819,75 @@ func TestWritesBumpUpdatedAt(t *testing.T) {
 		t.Error("AddAliases sans nouveau mot-clé a réécrit le sujet")
 	}
 }
+
+func termRows(t *testing.T, q db.Querier) []string {
+	t.Helper()
+	rows, err := q.QueryContext(bg, "SELECT term || '|' || subject_uid FROM subject_terms ORDER BY 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var r string
+		if err := rows.Scan(&r); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func TestTermsFollowEveryWrite(t *testing.T) {
+	d := openDB(t)
+	a := create(t, d, "Épsilon Lab", "elab")
+	b := create(t, d, "Gamma")
+	repo, err := EnsureRepo(d, "example/zeta", "zeta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Rename(d, a, "Éta Lab"); err != nil {
+		t.Fatal(err)
+	}
+	if err := AddAliases(d, b, []string{"Γ tool", "gamma-cli"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureRepo(d, "example/zeta", "zeta"); err != nil {
+		t.Fatal(err)
+	}
+	check := func(step string) {
+		t.Helper()
+		got := termRows(t, d)
+		if err := RebuildTerms(d); err != nil {
+			t.Fatal(err)
+		}
+		if want := termRows(t, d); !slices.Equal(got, want) {
+			t.Fatalf("%s: maintained %v, rebuilt %v", step, got, want)
+		}
+	}
+	check("writes")
+	if err := Merge(d, b, repo); err != nil {
+		t.Fatal(err)
+	}
+	check("merge")
+	if n := count(t, d, "SELECT count(*) FROM subject_terms WHERE subject_uid = ?", b); n != 0 {
+		t.Fatalf("merged subject keeps %d terms", n)
+	}
+	found, err := FindByTerm(d, "GAMMA CLI")
+	if err != nil || len(found) != 1 || found[0].UID != repo {
+		t.Fatalf("found %v, %v", found, err)
+	}
+}
+
+func TestByTermsIsOneIndexedLookup(t *testing.T) {
+	d := openDB(t)
+	a := create(t, d, "Paul")
+	b := create(t, d, "Paul Two", "paul")
+	got, err := ByTerms(d, []string{"paul", "absent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got["paul"]) != 2 || len(got["absent"]) != 0 || got["paul"][0].UID == got["paul"][1].UID {
+		t.Fatalf("got %v (%s, %s)", got, a, b)
+	}
+}
