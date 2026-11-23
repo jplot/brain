@@ -1157,7 +1157,7 @@ func TestSessionForgottenDuringCallWritesNothing(t *testing.T) {
 	f := newFixture(t)
 	f.seed("s1", greeting...)
 	run := func(prompt, system string, schema any) (Result, error) {
-		if err := memory.ForgetSession(f.db, f.p, "s1"); err != nil {
+		if err := memory.ForgetSession(f.db, "s1"); err != nil {
 			t.Fatal(err)
 		}
 		return Result{Data: answer(point())}, nil
@@ -1188,7 +1188,7 @@ func TestForgottenDuringFailedCallNoFailureRow(t *testing.T) {
 	f := newFixture(t)
 	f.seed("s1", greeting...)
 	run := func(prompt, system string, schema any) (Result, error) {
-		if err := memory.ForgetSession(f.db, f.p, "s1"); err != nil {
+		if err := memory.ForgetSession(f.db, "s1"); err != nil {
 			t.Fatal(err)
 		}
 		return Result{}, &Error{msg: "x"}
@@ -1201,7 +1201,7 @@ func TestForgottenDuringFailedCallNoFailureRow(t *testing.T) {
 func TestCountAttemptRefusesForgottenSession(t *testing.T) {
 	f := newFixture(t)
 	f.seed("s1", greeting...)
-	if err := memory.ForgetSession(f.db, f.p, "s1"); err != nil {
+	if err := memory.ForgetSession(f.db, "s1"); err != nil {
 		t.Fatal(err)
 	}
 	counted, err := countAttempt(f.db, "s1", now0)

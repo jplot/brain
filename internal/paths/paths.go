@@ -15,7 +15,6 @@ func (p Paths) IndexLock() string   { return filepath.Join(p.Home, "index.lock")
 func (p Paths) SummaryLock() string { return filepath.Join(p.Home, "summary.lock") }
 func (p Paths) Bin() string         { return filepath.Join(p.Home, "bin") }
 func (p Paths) Journals() string    { return filepath.Join(p.Home, "journals") }
-func (p Paths) Archive() string     { return filepath.Join(p.Journals(), "archive.jsonl") }
 
 func (p Paths) BinDir() string {
 	user, _ := os.UserHomeDir()

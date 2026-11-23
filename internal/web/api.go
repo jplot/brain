@@ -600,7 +600,7 @@ func forgetSession(s *server, r *request) (any, error) {
 	if id == "" || id != ref {
 		return nil, fail(http.StatusNotFound, "session not found")
 	}
-	if err := memory.ForgetSession(s.conn, s.p, id); err != nil {
+	if err := memory.ForgetSession(s.conn, id); err != nil {
 		return nil, err
 	}
 	return done, nil

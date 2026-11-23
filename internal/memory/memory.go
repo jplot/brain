@@ -2,25 +2,20 @@
 package memory
 
 import (
-	"bytes"
 	stdcmp "cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log"
 	"math"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/mask"
-	"github.com/jplot/brain/internal/paths"
 	"github.com/jplot/brain/internal/search"
 	"github.com/jplot/brain/internal/subjects"
 )
@@ -459,7 +454,7 @@ func ForgetPoint(d *sql.DB, id int64) error {
 	})
 }
 
-func ForgetSession(q db.Querier, p paths.Paths, sessionID string) error {
+func ForgetSession(q db.Querier, sessionID string) error {
 	d, ok := q.(*sql.DB)
 	if !ok {
 		return ErrInTransaction
@@ -506,13 +501,7 @@ func ForgetSession(q db.Querier, p paths.Paths, sessionID string) error {
 				return err
 			}
 		}
-		rewritten, err := withoutSession(p.Archive(), sessionID)
-		if err != nil || !rewritten {
-			return err
-		}
-		// Re-read from the start: the old offset no longer points at a line boundary.
-		_, err = c.ExecContext(background, "DELETE FROM files WHERE path = ?", p.Archive())
-		return err
+		return nil
 	})
 }
 
@@ -575,46 +564,4 @@ func dropOrphans(c *sql.Conn, touchedJSON string) error {
 		}
 	}
 	return nil
-}
-
-// Only the archive is rewritten: paul migrate wrote it, while the other journals belong to
-// the programs that write them.
-func withoutSession(path, sessionID string) (bool, error) {
-	content, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	var kept bytes.Buffer
-	removed := false
-	for _, line := range bytes.SplitAfter(content, []byte("\n")) {
-		var l struct{ Session string }
-		if json.Unmarshal(line, &l) == nil && l.Session == sessionID {
-			removed = true
-			continue
-		}
-		kept.Write(line)
-	}
-	if !removed {
-		return false, nil
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".archive-")
-	if err != nil {
-		return false, err
-	}
-	defer os.Remove(tmp.Name())
-	_, err = tmp.Write(kept.Bytes())
-	if err := errors.Join(err, tmp.Sync(), tmp.Close()); err != nil {
-		return false, err
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return false, err
-	}
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return false, err
-	}
-	return true, errors.Join(dir.Sync(), dir.Close())
 }

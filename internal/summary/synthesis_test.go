@@ -372,7 +372,7 @@ func TestForgottenSessionStalesAncestors(t *testing.T) {
 	Synthesize(f.db, camille, parent, newModel(synthesisOf("Parent", points[0], points[1])).run, now0)
 	f.exec("INSERT INTO episodes(uid, session_id, start_ts, end_ts, created_at, updated_at) VALUES ('e-oubli', 's9', ?, ?, ?, ?)", t0, t0, t0, t0)
 	f.exec("UPDATE points SET episode_id = (SELECT id FROM episodes WHERE uid = 'e-oubli') WHERE id = ?", childPoints[2])
-	if err := memory.ForgetSession(f.db, f.p, "s9"); err != nil {
+	if err := memory.ForgetSession(f.db, "s9"); err != nil {
 		t.Fatal(err)
 	}
 	if r, _ := f.synthesis(parent); r.stale != 1 {
@@ -517,7 +517,7 @@ func TestForgottenSessionMarksCitingSynthesesStale(t *testing.T) {
 	f.exec("UPDATE points SET episode_id = (SELECT episode_id FROM points WHERE id = ?) WHERE id = ?", otherPoints[0], points[0])
 	f.exec("INSERT INTO episodes(uid, session_id, start_ts, end_ts, created_at, updated_at) VALUES ('e-reste', 's-reste', ?, ?, ?, ?)", t0, t0, t0, t0)
 	f.exec("UPDATE points SET episode_id = (SELECT id FROM episodes WHERE uid = 'e-reste') WHERE id = ?", points[1])
-	if err := memory.ForgetSession(f.db, f.p, "s9"); err != nil {
+	if err := memory.ForgetSession(f.db, "s9"); err != nil {
 		t.Fatal(err)
 	}
 	if r, _ := f.synthesis(f.home); r.stale != 1 {
