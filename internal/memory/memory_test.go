@@ -890,3 +890,24 @@ func TestForgetSessionDropsTheGraphItCreated(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestForgetPointRestoresWhatItReplaced(t *testing.T) {
+	f := newFixture(t)
+	e := f.defaultEpisode()
+	f.point(e, pt{text: "ancien", supersede: "p3"})
+	id := f.point(e, pt{text: "nouveau"})
+	if err := ForgetPoint(f.db, id); err != nil {
+		t.Fatal(err)
+	}
+	equal(t, texts(f.visible(PointFilter{})), []string{"ancien"})
+}
+
+func TestForgetSessionRestoresWhatItReplaced(t *testing.T) {
+	f := newFixture(t)
+	f.point(f.defaultEpisode(), pt{text: "ancien", supersede: "p4"})
+	f.point(f.episode("s-oubli", t0, "t", "r"), pt{text: "nouveau"})
+	if err := ForgetSession(f.db, f.p, "s-oubli"); err != nil {
+		t.Fatal(err)
+	}
+	equal(t, texts(f.visible(PointFilter{})), []string{"ancien"})
+}
