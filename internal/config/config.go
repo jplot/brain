@@ -1,13 +1,13 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
-	"path/filepath"
-	"sort"
+	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -18,23 +18,14 @@ type SyncConfig struct {
 }
 
 type Config struct {
-	User     string            `toml:"user"`
-	Roots    []string          `toml:"roots"`
-	Journals []string          `toml:"journals"`
-	Command  string            `toml:"command"`
-	Labels   map[string]string `toml:"labels"`
-	Sync     *SyncConfig       `toml:"sync"`
-}
-
-func defaults() Config {
-	return Config{User: "l'utilisateur", Command: "~/.local/bin/paul"}
+	Sync *SyncConfig `toml:"sync"`
 }
 
 func Load(path string) (Config, error) {
-	cfg := defaults()
+	var cfg Config
 	meta, err := toml.DecodeFile(path, &cfg)
 	if errors.Is(err, fs.ErrNotExist) {
-		return expand(cfg), nil
+		return Config{}, nil
 	}
 	if err != nil {
 		return Config{}, fmt.Errorf("configuration %s : %w", path, err)
@@ -46,41 +37,18 @@ func Load(path string) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("configuration %s : clé inconnue %s", path, strings.Join(keys, ", "))
 	}
-	for _, key := range sortedKeys(cfg.Labels) {
-		if label := cfg.Labels[key]; label != "personal" && label != "work" {
-			return Config{}, fmt.Errorf("configuration %s : labels.%s vaut %q, attendu personal ou work", path, key, label)
-		}
-	}
-	return expand(cfg), nil
+	return cfg, nil
 }
 
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func expand(cfg Config) Config {
-	for i, r := range cfg.Roots {
-		cfg.Roots[i] = expandTilde(r)
-	}
-	for i, j := range cfg.Journals {
-		cfg.Journals[i] = expandTilde(j)
-	}
-	cfg.Command = expandTilde(cfg.Command)
-	return cfg
-}
-
-func expandTilde(p string) string {
-	if p != "~" && !strings.HasPrefix(p, "~/") {
-		return p
-	}
-	home, err := os.UserHomeDir()
+func UserName() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "config", "--global", "user.name").Output()
 	if err != nil {
-		return p
+		return "l'utilisateur"
 	}
-	return filepath.Join(home, p[1:])
+	if fields := strings.Fields(string(out)); len(fields) > 0 {
+		return fields[0]
+	}
+	return "l'utilisateur"
 }

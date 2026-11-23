@@ -14,7 +14,7 @@ import (
 	"github.com/jplot/brain/internal/paths"
 )
 
-const IndexVersion = 5
+const IndexVersion = 6
 
 type Querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)

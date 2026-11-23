@@ -31,6 +31,7 @@ func TestFileNames(t *testing.T) {
 		p.DB(): "/h/paul.db", p.Log(): "/h/paul.log", p.IndexLock(): "/h/index.lock",
 		p.SummaryLock(): "/h/summary.lock", p.InstallLock(): "/h/install.lock",
 		p.Bin(): "/h/bin", p.Config(): "/h/config.toml",
+		p.Journals(): "/h/journals", p.SyncDir(): "/h/sync",
 	} {
 		if got != want {
 			t.Errorf("got %s, want %s", got, want)
@@ -53,5 +54,20 @@ func TestEnsureHomeIs700(t *testing.T) {
 	info, _ := os.Stat(home)
 	if info.Mode().Perm() != 0o700 {
 		t.Fatalf("mode %v", info.Mode().Perm())
+	}
+}
+
+func TestBinDirDefault(t *testing.T) {
+	t.Setenv("PAUL_BIN_DIR", "")
+	t.Setenv("HOME", "/u")
+	if got := (Paths{}).BinDir(); got != "/u/.local/bin" {
+		t.Fatalf("got %s", got)
+	}
+}
+
+func TestBinDirFromEnv(t *testing.T) {
+	t.Setenv("PAUL_BIN_DIR", "/x/bin")
+	if got := (Paths{}).BinDir(); got != "/x/bin" {
+		t.Fatalf("got %s", got)
 	}
 }

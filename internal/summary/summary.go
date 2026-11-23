@@ -211,11 +211,11 @@ func integer(v any) (int64, bool) {
 }
 
 type newPoint struct {
-	kind, text, sourceTS, project string
-	importance                    int64
+	kind, text, sourceTS string
+	importance           int64
 }
 
-func cleanPoint(raw any, owners map[string]map[string]bool) (newPoint, bool) {
+func cleanPoint(raw any, timestamps map[string]bool) (newPoint, bool) {
 	m, _ := raw.(map[string]any)
 	kind, _ := m["kind"].(string)
 	text, _ := m["text"].(string)
@@ -226,10 +226,10 @@ func cleanPoint(raw any, owners map[string]map[string]bool) (newPoint, bool) {
 	}
 	// Haiku returned "[ts]" in 2 answers out of 14 of a real session; 2 sessions out of 20 ended with no point.
 	ts = strings.Trim(strings.TrimSpace(ts), "[]")
-	if _, ok := owners[ts]; !ok {
+	if !timestamps[ts] {
 		// Replaying 3 sessions with no point, 1 answer out of 12 gave the time without the date: 10 points out of 10 rejected.
 		var same []string
-		for owned := range owners {
+		for owned := range timestamps {
 			if strings.HasSuffix(owned, "T"+ts) {
 				same = append(same, owned)
 			}
@@ -239,19 +239,7 @@ func cleanPoint(raw any, owners map[string]map[string]bool) (newPoint, bool) {
 		}
 		ts = same[0]
 	}
-	p := newPoint{kind: kind, text: text, sourceTS: ts, importance: importance}
-	candidates := owners[ts]
-	if project, ok := m["project"].(string); ok && candidates[project] {
-		p.project = project
-		return p, true
-	}
-	if len(candidates) != 1 {
-		return newPoint{}, false
-	}
-	for only := range candidates {
-		p.project = only
-	}
-	return p, true
+	return newPoint{kind: kind, text: text, sourceTS: ts, importance: importance}, true
 }
 
 func encode(v any) (string, error) {
@@ -265,7 +253,7 @@ func encode(v any) (string, error) {
 }
 
 // Each round merges at least two outputs into one, so n chunks cost at most n-1 merge calls.
-func merge(c *calls, system string, projects []string, open []openPoint, outputs []map[string]any) (map[string]any, error) {
+func merge(c *calls, system string, open []openPoint, outputs []map[string]any) (map[string]any, error) {
 	for len(outputs) > 1 {
 		var batches [][]map[string]any
 		var current []map[string]any
@@ -297,7 +285,7 @@ func merge(c *calls, system string, projects []string, open []openPoint, outputs
 			if err != nil {
 				return nil, err
 			}
-			merged, err := c.summary(prompt(projects, open, "Résumés partiels à fusionner, en JSON :\n"+body), system)
+			merged, err := c.summary(prompt(open, "Résumés partiels à fusionner, en JSON :\n"+body), system)
 			if err != nil {
 				return nil, err
 			}
@@ -365,14 +353,14 @@ func SummarizeSession(conn *sql.DB, user, sessionID string, run Runner, now time
 	return out
 }
 
-type message struct{ ts, role, project, text string }
+type message struct{ ts, role, text string }
 
 func newMessages(conn *sql.DB, sessionID string) ([]message, error) {
 	var done sql.NullString
 	if err := conn.QueryRow("SELECT max(end_ts) FROM episodes WHERE session_id = ?", sessionID).Scan(&done); err != nil {
 		return nil, err
 	}
-	rows, err := conn.Query("SELECT ts, role, project, text FROM messages WHERE session_id = ? AND ts > ?"+
+	rows, err := conn.Query("SELECT ts, role, text FROM messages WHERE session_id = ? AND ts > ?"+
 		" ORDER BY ts, id", sessionID, done.String)
 	if err != nil {
 		return nil, err
@@ -381,7 +369,7 @@ func newMessages(conn *sql.DB, sessionID string) ([]message, error) {
 	var out []message
 	for rows.Next() {
 		var m message
-		if err := rows.Scan(&m.ts, &m.role, &m.project, &m.text); err != nil {
+		if err := rows.Scan(&m.ts, &m.role, &m.text); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -389,13 +377,9 @@ func newMessages(conn *sql.DB, sessionID string) ([]message, error) {
 	return out, rows.Err()
 }
 
-func openPoints(conn *sql.DB, projects []string) ([]openPoint, error) {
-	args := make([]any, 0, len(projects)+1)
-	for _, p := range projects {
-		args = append(args, p)
-	}
-	rows, err := conn.Query("SELECT id, text FROM points WHERE kind = 'pending' AND closed_at IS NULL AND project IN ("+
-		strings.Repeat("?,", len(projects)-1)+"?) ORDER BY importance DESC, id LIMIT ?", append(args, MaxOpenPoints)...)
+func openPoints(conn *sql.DB) ([]openPoint, error) {
+	rows, err := conn.Query("SELECT id, text FROM points WHERE kind = 'pending' AND closed_at IS NULL"+
+		" ORDER BY importance DESC, id LIMIT ?", MaxOpenPoints)
 	if err != nil {
 		return nil, err
 	}
@@ -414,7 +398,6 @@ func openPoints(conn *sql.DB, projects []string) ([]openPoint, error) {
 type episode struct {
 	start, end     string
 	title, summary *string
-	projects       []string
 	points         []newPoint
 	closes         []int64
 }
@@ -429,21 +412,14 @@ func summarize(conn *sql.DB, user, sessionID string, c *calls, now time.Time) (O
 	}
 	e := episode{start: rows[0].ts, end: rows[len(rows)-1].ts}
 	var lines []string
-	owners := map[string]map[string]bool{}
+	timestamps := map[string]bool{}
 	for _, m := range rows {
-		if !slices.Contains(e.projects, m.project) {
-			e.projects = append(e.projects, m.project)
-		}
 		if m.role == "tool" {
 			continue
 		}
 		lines = append(lines, fmt.Sprintf("[%s] %s : %s", m.ts, m.role, m.text))
-		if owners[m.ts] == nil {
-			owners[m.ts] = map[string]bool{}
-		}
-		owners[m.ts][m.project] = true
+		timestamps[m.ts] = true
 	}
-	slices.Sort(e.projects)
 	status := Empty
 	if slices.ContainsFunc(rows, func(m message) bool { return m.role == "user" }) {
 		parts := chunks(lines)
@@ -451,7 +427,7 @@ func summarize(conn *sql.DB, user, sessionID string, c *calls, now time.Time) (O
 			log.Printf("épisode trop long : %s (%d morceaux)", sessionID, len(parts))
 			status = TooLong
 		} else {
-			open, err := openPoints(conn, e.projects)
+			open, err := openPoints(conn)
 			if err != nil {
 				return Outcome{}, err
 			}
@@ -463,7 +439,7 @@ func summarize(conn *sql.DB, user, sessionID string, c *calls, now time.Time) (O
 			if !counted {
 				return Outcome{Status: Already}, nil
 			}
-			if err := summarizeParts(c, user, sessionID, parts, open, owners, &e); err != nil {
+			if err := summarizeParts(c, user, sessionID, parts, open, timestamps, &e); err != nil {
 				return Outcome{}, err
 			}
 			status = Summarized
@@ -479,17 +455,17 @@ func summarize(conn *sql.DB, user, sessionID string, c *calls, now time.Time) (O
 	return Outcome{Status: status, Points: len(e.points), CostUSD: c.cost}, nil
 }
 
-func summarizeParts(c *calls, user, sessionID string, parts []string, open []openPoint, owners map[string]map[string]bool, e *episode) error {
+func summarizeParts(c *calls, user, sessionID string, parts []string, open []openPoint, timestamps map[string]bool, e *episode) error {
 	sys := system(user)
 	var outputs []map[string]any
 	for _, part := range parts {
-		output, err := c.summary(prompt(e.projects, open, "Conversation :\n"+part), sys)
+		output, err := c.summary(prompt(open, "Conversation :\n"+part), sys)
 		if err != nil {
 			return err
 		}
 		outputs = append(outputs, output)
 	}
-	output, err := merge(c, sys, e.projects, open, outputs)
+	output, err := merge(c, sys, open, outputs)
 	if err != nil {
 		return err
 	}
@@ -497,7 +473,7 @@ func summarizeParts(c *calls, user, sessionID string, parts []string, open []ope
 	e.title, e.summary = &title, &summary
 	raw := output["points"].([]any)
 	for _, r := range raw {
-		if p, ok := cleanPoint(r, owners); ok {
+		if p, ok := cleanPoint(r, timestamps); ok {
 			e.points = append(e.points, p)
 		}
 	}
@@ -515,10 +491,6 @@ func summarizeParts(c *calls, user, sessionID string, parts []string, open []ope
 }
 
 func store(conn *sql.DB, sessionID string, e episode, created string) (written bool, err error) {
-	projects, err := json.Marshal(e.projects)
-	if err != nil {
-		return false, err
-	}
 	err = immediate(conn, func(c *sql.Conn) error {
 		if _, err := c.ExecContext(ctx, "DELETE FROM summary_failures WHERE session_id = ?", sessionID); err != nil {
 			return err
@@ -532,9 +504,9 @@ func store(conn *sql.DB, sessionID string, e episode, created string) (written b
 		if err != nil || exists || gone {
 			return err
 		}
-		res, err := c.ExecContext(ctx, "INSERT INTO episodes(uid, session_id, start_ts, end_ts, title, summary, projects,"+
-			" created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", newUID(), sessionID, e.start, e.end, e.title,
-			e.summary, string(projects), created, created)
+		res, err := c.ExecContext(ctx, "INSERT INTO episodes(uid, session_id, start_ts, end_ts, title, summary,"+
+			" created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", newUID(), sessionID, e.start, e.end, e.title,
+			e.summary, created, created)
 		if err != nil {
 			return err
 		}
@@ -543,8 +515,8 @@ func store(conn *sql.DB, sessionID string, e episode, created string) (written b
 			return err
 		}
 		for _, p := range e.points {
-			if _, err := c.ExecContext(ctx, "INSERT INTO points(uid, episode_id, kind, project, text, importance, source_ts,"+
-				" created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", newUID(), id, p.kind, p.project,
+			if _, err := c.ExecContext(ctx, "INSERT INTO points(uid, episode_id, kind, text, importance, source_ts,"+
+				" created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", newUID(), id, p.kind,
 				mask.Text(p.text), p.importance, p.sourceTS, created, created); err != nil {
 				return err
 			}
@@ -668,7 +640,7 @@ func since(conn *sql.DB, o Options, now time.Time) (string, error) {
 
 // RunCatchup returns false when another summarizer holds the lock. Only the sessions started after
 // the first run are summarized, unless o.All; o.Since replaces that first run.
-func RunCatchup(p paths.Paths, cfg config.Config, o Options) ([]Outcome, bool) {
+func RunCatchup(p paths.Paths, o Options) ([]Outcome, bool) {
 	if err := p.EnsureHome(); err != nil {
 		log.Printf("résumés impossibles (%T)", err)
 		return nil, false
@@ -681,14 +653,14 @@ func RunCatchup(p paths.Paths, cfg config.Config, o Options) ([]Outcome, bool) {
 		return nil, false
 	}
 	defer release()
-	outcomes, err := catchup(p, cfg, o)
+	outcomes, err := catchup(p, o)
 	if err != nil {
 		log.Printf("résumés impossibles (%T)", err)
 	}
 	return outcomes, true
 }
 
-func catchup(p paths.Paths, cfg config.Config, o Options) ([]Outcome, error) {
+func catchup(p paths.Paths, o Options) ([]Outcome, error) {
 	conn, err := db.Open(p, busyTimeout)
 	if err != nil {
 		return nil, err
@@ -705,7 +677,7 @@ func catchup(p paths.Paths, cfg config.Config, o Options) ([]Outcome, error) {
 	var outcomes []Outcome
 	// Oldest first: newest first left 48 pending points open for 3 closed over 20 real sessions.
 	for _, session := range slices.Backward(sessions) {
-		outcomes = append(outcomes, SummarizeSession(conn, cfg.User, session, runner, time.Time{}))
+		outcomes = append(outcomes, SummarizeSession(conn, config.UserName(), session, runner, time.Time{}))
 		if outcomes[len(outcomes)-1].Status == Busy {
 			break
 		}

@@ -35,8 +35,8 @@ func open(t *testing.T) *sql.DB {
 
 func insertMessage(t *testing.T, q Querier, key, text string) {
 	t.Helper()
-	_, err := q.ExecContext(ctx, `INSERT INTO messages(key, session_id, file, ts, role, project, text)
-		VALUES (?, 's1', 'f', '2026-01-01T00:00:00Z', 'user', 'p', ?)`, key, text)
+	_, err := q.ExecContext(ctx, `INSERT INTO messages(key, session_id, file, ts, role, text)
+		VALUES (?, 's1', 'f', '2026-01-01T00:00:00Z', 'user', ?)`, key, text)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,10 +92,11 @@ func TestAccentsIgnored(t *testing.T) {
 	}
 }
 
-func TestRebuildIndexKeepsState(t *testing.T) {
+func TestRebuildIndexKeepsSubjectsAndLinks(t *testing.T) {
 	d := open(t)
-	d.Exec(`INSERT INTO projects VALUES ('id1','p','work','user','2026-01-01T00:00:00Z')`)
-	d.Exec(`INSERT INTO accesses VALUES ('id1','id2',1,'2026-01-01T00:00:00Z')`)
+	mustExec(t, d, `INSERT INTO subjects(uid,kind,name,aliases,created_at,updated_at) VALUES ('s1','subject','a','[]','t','t'),('s2','subject','b','[]','t','t')`)
+	mustExec(t, d, `INSERT INTO links VALUES ('s1','depends_on','s2',1,'model',NULL,'t')`)
+	mustExec(t, d, `INSERT INTO merged VALUES ('s3','s1','t')`)
 	insertMessage(t, d, "k1", "bonjour")
 	if err := RebuildIndex(d); err != nil {
 		t.Fatal(err)
@@ -106,22 +107,25 @@ func TestRebuildIndexKeepsState(t *testing.T) {
 	if n := ftsCount(t, d, "bonjour"); n != 0 {
 		t.Fatalf("fts %d", n)
 	}
-	if n := count(t, d, "SELECT count(*) FROM projects WHERE label='work'"); n != 1 {
-		t.Fatalf("projects %d", n)
-	}
-	if n := count(t, d, "SELECT count(*) FROM accesses"); n != 1 {
-		t.Fatalf("accesses %d", n)
+	for _, table := range []string{"subjects", "links", "merged"} {
+		if n := count(t, d, "SELECT count(*) FROM "+table); n == 0 {
+			t.Fatalf("%s emptied", table)
+		}
 	}
 }
 
-func TestRebuildIndexKeepsProjectPaths(t *testing.T) {
+func TestRebuildIndexClearsRepoCache(t *testing.T) {
 	d := open(t)
-	d.Exec(`INSERT INTO project_paths VALUES ('/some/dir','id1')`)
+	mustExec(t, d, `INSERT INTO repo_cache VALUES ('/some/dir',NULL,'t')`)
+	mustExec(t, d, `INSERT INTO session_repos VALUES ('s1','u1')`)
+	mustExec(t, d, `INSERT INTO injected VALUES ('s1','u1')`)
 	if err := RebuildIndex(d); err != nil {
 		t.Fatal(err)
 	}
-	if n := count(t, d, "SELECT count(*) FROM project_paths WHERE path='/some/dir'"); n != 1 {
-		t.Fatalf("got %d", n)
+	for _, table := range []string{"repo_cache", "session_repos", "injected"} {
+		if n := count(t, d, "SELECT count(*) FROM "+table); n != 0 {
+			t.Fatalf("%s kept %d rows", table, n)
+		}
 	}
 }
 
@@ -165,28 +169,50 @@ func TestPragmasOnEveryPooledConnection(t *testing.T) {
 	}
 }
 
+func mustExec(t *testing.T, q Querier, query string) {
+	t.Helper()
+	if _, err := q.ExecContext(ctx, query); err != nil {
+		t.Fatalf("%s: %v", query, err)
+	}
+}
+
 func TestSchemaConstraints(t *testing.T) {
 	d := open(t)
+	mustExec(t, d, `INSERT INTO subjects(uid,kind,name,aliases,repo,created_at,updated_at) VALUES ('s1','repo','a','[]','github.com/o/r','t','t')`)
+	mustExec(t, d, `INSERT INTO subjects(uid,kind,name,aliases,created_at,updated_at) VALUES ('s2','subject','b','[]','t','t')`)
+	mustExec(t, d, `INSERT INTO links VALUES ('s2','about','s1',1,'user',NULL,'t')`)
+	mustExec(t, d, `INSERT INTO episodes(id,session_id,start_ts,end_ts,created_at,uid,updated_at) VALUES (1,'s','a','b','c','u1','t')`)
+	mustExec(t, d, `INSERT INTO episode_subjects VALUES ('u1','s1')`)
+	mustExec(t, d, `INSERT INTO points(episode_id,kind,text,importance,source_ts,created_at,uid,updated_at) VALUES (1,'fact','x',3,'a','b','p1','t')`)
+	mustExec(t, d, `INSERT INTO forgotten_points VALUES ('p1','t')`)
+	mustExec(t, d, `INSERT INTO repo_cache VALUES ('/d',NULL,'t')`)
+
 	bad := []string{
-		`INSERT INTO projects VALUES ('a','n','perso','user','t')`,
-		`INSERT INTO projects VALUES ('a','n','work','other','t')`,
-		`INSERT INTO messages(key,session_id,file,ts,role,project,text) VALUES ('k','s','f','t','other','p','x')`,
-		`INSERT INTO episodes(session_id,start_ts,end_ts,projects,created_at,updated_at) VALUES ('s','a','b','p','c','u')`,
+		`INSERT INTO subjects(uid,kind,name,aliases,created_at,updated_at) VALUES ('x','project','n','[]','t','t')`,
+		`INSERT INTO subjects(uid,kind,name,aliases,repo,created_at,updated_at) VALUES ('x','repo','n','[]','github.com/o/r','t','t')`,
+		`INSERT INTO subjects(uid,kind,name,aliases,parent_origin,created_at,updated_at) VALUES ('x','subject','n','[]','other','t','t')`,
+		`INSERT INTO links VALUES ('s1','part_of','s2',1,'model',NULL,'t')`,
+		`INSERT INTO links VALUES ('s1','depends_on','s2',1,'other',NULL,'t')`,
+		`INSERT INTO links VALUES ('s2','about','s1',0,'user',NULL,'t')`,
+		`INSERT INTO episode_subjects VALUES ('u1','s1')`,
+		`INSERT INTO points(episode_id,kind,text,importance,source_ts,created_at,uid,updated_at) VALUES (1,'sujet','x',3,'a','b','p2','t')`,
+		`INSERT INTO points(episode_id,kind,text,importance,source_ts,created_at,uid,updated_at) VALUES (1,'fact','x',3,'a','b','p1','t')`,
+		`INSERT INTO messages(key,session_id,file,ts,role,text) VALUES ('k','s','f','t','other','x')`,
+		`INSERT INTO injected VALUES ('s1','u1'),('s1','u1')`,
 	}
 	for _, q := range bad {
 		if _, err := d.Exec(q); err == nil {
 			t.Errorf("accepted: %s", q)
 		}
 	}
-	d.Exec(`INSERT INTO episodes(id,session_id,start_ts,end_ts,projects,created_at,uid,updated_at) VALUES (1,'s','a','b','p','c','u1','t')`)
-	if _, err := d.Exec(`INSERT INTO points(episode_id,kind,project,text,importance,source_ts,created_at,uid,updated_at) VALUES (1,'sujet','p','x',3,'a','b','u2','t')`); err == nil {
-		t.Error("old kind accepted")
-	}
-	if _, err := d.Exec(`INSERT INTO points(episode_id,kind,project,text,importance,source_ts,created_at,uid,updated_at) VALUES (1,'fact','p','x',3,'a','b','u1','t')`); err != nil {
-		t.Error(err)
-	}
-	if _, err := d.Exec(`INSERT INTO forgotten_points VALUES ('u1','t')`); err != nil {
-		t.Error(err)
+}
+
+func TestPointsSupersededColumnsDefaultNull(t *testing.T) {
+	d := open(t)
+	mustExec(t, d, `INSERT INTO episodes(id,session_id,start_ts,end_ts,created_at,uid,updated_at) VALUES (1,'s','a','b','c','u1','t')`)
+	mustExec(t, d, `INSERT INTO points(episode_id,kind,text,importance,source_ts,created_at,uid,updated_at) VALUES (1,'fact','x',3,'a','b','p1','t')`)
+	if n := count(t, d, "SELECT count(*) FROM points WHERE superseded_by_uid IS NULL AND superseded_at IS NULL"); n != 1 {
+		t.Fatalf("got %d", n)
 	}
 }
 

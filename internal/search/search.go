@@ -1,4 +1,4 @@
-// Package search answers the read side of the memory: full-text search and the session views, all bounded by a scope.
+// Package search answers the read side of the memory: full-text search and the session views,
 package search
 
 import (
@@ -12,16 +12,14 @@ import (
 	"unicode"
 
 	"github.com/jplot/brain/internal/db"
-	"github.com/jplot/brain/internal/projects"
 )
 
 const (
 	markOn  = "\x01"
 	markOff = "\x02"
 
-	from  = " FROM messages m LEFT JOIN projects p ON p.id = m.project"
-	label = "COALESCE(p.label, 'unsorted')"
-	utc   = "2006-01-02T15:04:05.000Z"
+	from = " FROM messages m"
+	utc  = "2006-01-02T15:04:05.000Z"
 )
 
 var (
@@ -44,34 +42,32 @@ type Segment struct {
 }
 
 type Hit struct {
-	TS, Project, Label, SessionID, Role string
-	Segments                            []Segment
+	TS, SessionID, Role string
+	Segments            []Segment
 }
 
 // Since and Until are calendar days in their own location, both included.
 type Filter struct {
-	Project, Label string
-	Since, Until   *time.Time
-	Limit          int
+	Since, Until *time.Time
+	Limit        int
 }
 
 type ListFilter struct {
-	Project, Label, Before string
-	Limit                  int
+	Before string
+	Limit  int
 }
 
 type SessionRow struct {
 	ID                 string
 	Title              *string
 	StartedAt, EndedAt string
-	Projects, Labels   []string
 	Messages           int
 }
 
 type Message struct {
-	ID                                        int64
-	SessionID, TS, Role, Project, Label, Text string
-	GitBranch                                 *string
+	ID                        int64
+	SessionID, TS, Role, Text string
+	GitBranch                 *string
 }
 
 func ToFTSQuery(text string) (string, error) {
@@ -92,26 +88,7 @@ func dayStart(t time.Time, plus int) string {
 	return time.Date(y, m, d+plus, 0, 0, 0, 0, t.Location()).UTC().Format(utc)
 }
 
-func visible(s projects.Scope, project, lbl string, since, until *time.Time) (clauses []string, args []any) {
-	if s.Projects != nil {
-		ids := make([]string, 0, len(s.Projects))
-		for id := range s.Projects {
-			ids = append(ids, id)
-		}
-		slices.Sort(ids)
-		clauses = append(clauses, "m.project IN ("+placeholders(len(ids))+")")
-		for _, id := range ids {
-			args = append(args, id)
-		}
-	}
-	if project != "" {
-		clauses = append(clauses, "m.project = ?")
-		args = append(args, project)
-	}
-	if lbl != "" {
-		clauses = append(clauses, label+" = ?")
-		args = append(args, lbl)
-	}
+func visible(since, until *time.Time) (clauses []string, args []any) {
 	if since != nil {
 		clauses = append(clauses, "m.ts >= ?")
 		args = append(args, dayStart(*since, 0))
@@ -169,7 +146,7 @@ func collect[T any](q db.Querier, query string, args []any, scan func(*sql.Rows)
 	return out, rows.Err()
 }
 
-func Search(q db.Querier, text string, s projects.Scope, f Filter) ([]Hit, error) {
+func Search(q db.Querier, text string, f Filter) ([]Hit, error) {
 	match, err := ToFTSQuery(text)
 	if err != nil {
 		return nil, err
@@ -178,44 +155,42 @@ func Search(q db.Querier, text string, s projects.Scope, f Filter) ([]Hit, error
 	if limit <= 0 {
 		limit = 20
 	}
-	clauses, args := visible(s, f.Project, f.Label, f.Since, f.Until)
+	clauses, args := visible(f.Since, f.Until)
 	where := ""
 	for _, c := range clauses {
 		where += " AND " + c
 	}
 	args = append([]any{markOn, markOff, match}, args...)
-	return collect(q, "SELECT m.ts, m.project, "+label+", m.session_id, m.role,"+
+	return collect(q, "SELECT m.ts, m.session_id, m.role,"+
 		" snippet(messages_fts, 0, ?, ?, '…', 16)"+
 		" FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid"+
-		" LEFT JOIN projects p ON p.id = m.project"+
 		" WHERE messages_fts MATCH ?"+where+
 		" ORDER BY bm25(messages_fts), m.ts DESC LIMIT ?", append(args, limit),
 		func(r *sql.Rows) (Hit, error) {
 			var h Hit
 			var excerpt string
-			err := r.Scan(&h.TS, &h.Project, &h.Label, &h.SessionID, &h.Role, &excerpt)
+			err := r.Scan(&h.TS, &h.SessionID, &h.Role, &excerpt)
 			h.Segments = segments(excerpt)
 			return h, err
 		})
 }
 
-func sessionRows(q db.Querier, s projects.Scope, ids []string) (map[string]*SessionRow, error) {
-	clauses, args := visible(s, "", "", nil, nil)
-	clauses = append([]string{"m.session_id IN (" + placeholders(len(ids)) + ")"}, clauses...)
+func sessionRows(q db.Querier, ids []string) (map[string]*SessionRow, error) {
+	clauses := []string{"m.session_id IN (" + placeholders(len(ids)) + ")"}
 	idArgs := make([]any, len(ids))
 	for i, id := range ids {
 		idArgs[i] = id
 	}
 	type group struct {
-		session, project, label, first, last string
-		title                                sql.NullString
-		n                                    int
+		session, first, last string
+		title                sql.NullString
+		n                    int
 	}
-	groups, err := collect(q, "SELECT m.session_id, s.title, m.project, "+label+", MIN(m.ts), MAX(m.ts), COUNT(*)"+
+	groups, err := collect(q, "SELECT m.session_id, s.title, MIN(m.ts), MAX(m.ts), COUNT(*)"+
 		from+" LEFT JOIN sessions s ON s.id = m.session_id WHERE "+and(clauses)+
-		" GROUP BY m.session_id, m.project", append(idArgs, args...),
+		" GROUP BY m.session_id", idArgs,
 		func(r *sql.Rows) (g group, err error) {
-			err = r.Scan(&g.session, &g.title, &g.project, &g.label, &g.first, &g.last, &g.n)
+			err = r.Scan(&g.session, &g.title, &g.first, &g.last, &g.n)
 			return g, err
 		})
 	if err != nil {
@@ -223,48 +198,13 @@ func sessionRows(q db.Querier, s projects.Scope, ids []string) (map[string]*Sess
 	}
 	found := map[string]*SessionRow{}
 	for _, g := range groups {
-		row := found[g.session]
-		if row == nil {
-			row = &SessionRow{ID: g.session, StartedAt: g.first, EndedAt: g.last}
-			if g.title.Valid {
-				row.Title = &g.title.String
-			}
-			found[g.session] = row
+		row := &SessionRow{ID: g.session, StartedAt: g.first, EndedAt: g.last, Messages: g.n}
+		if g.title.Valid {
+			row.Title = &g.title.String
 		}
-		row.StartedAt, row.EndedAt = min(row.StartedAt, g.first), max(row.EndedAt, g.last)
-		row.Projects = append(row.Projects, g.project)
-		if !slices.Contains(row.Labels, g.label) {
-			row.Labels = append(row.Labels, g.label)
-		}
-		row.Messages += g.n
-	}
-	for _, row := range found {
-		slices.Sort(row.Projects)
-		slices.Sort(row.Labels)
-	}
-	if s.Projects != nil {
-		return found, hideTitles(q, s, found)
+		found[g.session] = row
 	}
 	return found, nil
-}
-
-// A title written from a message outside the scope would leak what that message said.
-func hideTitles(q db.Querier, s projects.Scope, found map[string]*SessionRow) error {
-	ids := make([]any, 0, len(found))
-	for id := range found {
-		ids = append(ids, id)
-	}
-	inside := make([]any, 0, len(s.Projects))
-	for id := range s.Projects {
-		inside = append(inside, id)
-	}
-	partly, err := collect(q, "SELECT DISTINCT session_id FROM messages WHERE session_id IN ("+placeholders(len(ids))+
-		") AND project NOT IN ("+placeholders(len(inside))+")", append(ids, inside...),
-		func(r *sql.Rows) (id string, err error) { return id, r.Scan(&id) })
-	for _, id := range partly {
-		found[id].Title = nil
-	}
-	return err
 }
 
 func rowsOf(found map[string]*SessionRow) []SessionRow {
@@ -275,14 +215,14 @@ func rowsOf(found map[string]*SessionRow) []SessionRow {
 	return out
 }
 
-func DayView(q db.Querier, day time.Time, s projects.Scope) ([]SessionRow, error) {
-	clauses, args := visible(s, "", "", &day, &day)
+func DayView(q db.Querier, day time.Time) ([]SessionRow, error) {
+	clauses, args := visible(&day, &day)
 	ids, err := collect(q, "SELECT DISTINCT m.session_id"+from+" WHERE "+and(clauses), args,
 		func(r *sql.Rows) (id string, err error) { return id, r.Scan(&id) })
 	if err != nil || len(ids) == 0 {
 		return nil, err
 	}
-	found, err := sessionRows(q, s, ids)
+	found, err := sessionRows(q, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -295,30 +235,25 @@ func DayView(q db.Querier, day time.Time, s projects.Scope) ([]SessionRow, error
 
 // ListSessions pages by the last visible message; sessions tied with the last
 // one of the page are kept so the next page, cut strictly before, loses none.
-func ListSessions(q db.Querier, s projects.Scope, f ListFilter) ([]SessionRow, error) {
+func ListSessions(q db.Querier, f ListFilter) ([]SessionRow, error) {
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 50
 	}
-	clauses, args := visible(s, "", "", nil, nil)
-	picked, pickedArgs := visible(projects.Everything, f.Project, f.Label, nil, nil)
 	var having []string
-	if len(picked) > 0 {
-		having = append(having, "SUM("+and(picked)+") > 0")
-	}
-	havingArgs := pickedArgs
+	var havingArgs []any
 	if f.Before != "" {
 		having = append(having, "MAX(m.ts) < ?")
 		havingArgs = append(havingArgs, f.Before)
 	}
-	base := "SELECT m.session_id, MAX(m.ts)" + from + " WHERE " + and(clauses) + " GROUP BY m.session_id"
+	base := "SELECT m.session_id, MAX(m.ts)" + from + " GROUP BY m.session_id"
 	tail := ""
 	if len(having) > 0 {
 		tail = " HAVING " + strings.Join(having, " AND ")
 	}
 	type page struct{ id, last string }
 	scan := func(r *sql.Rows) (p page, err error) { return p, r.Scan(&p.id, &p.last) }
-	args = append(args, havingArgs...)
+	args := havingArgs
 	rows, err := collect(q, base+tail+" ORDER BY MAX(m.ts) DESC, m.session_id LIMIT ?", append(slices.Clone(args), limit), scan)
 	if err != nil || len(rows) == 0 {
 		return nil, err
@@ -337,7 +272,7 @@ func ListSessions(q db.Querier, s projects.Scope, f ListFilter) ([]SessionRow, e
 			ids = append(ids, p.id)
 		}
 	}
-	found, err := sessionRows(q, s, ids)
+	found, err := sessionRows(q, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -356,18 +291,13 @@ func escapeLike(text string) string {
 }
 
 // ResolveSession returns "" when no visible session matches; an exact id wins over longer ids it prefixes.
-func ResolveSession(q db.Querier, ref string, s projects.Scope) (string, error) {
+func ResolveSession(q db.Querier, ref string) (string, error) {
 	if ref == "" {
 		return "", nil
 	}
-	clauses, args := visible(s, "", "", nil, nil)
-	where := ""
-	for _, c := range clauses {
-		where += " AND " + c
-	}
 	ids, err := collect(q, "SELECT DISTINCT m.session_id"+from+
-		` WHERE (m.session_id = ? OR m.session_id LIKE ? ESCAPE '\')`+where+" ORDER BY m.session_id",
-		append([]any{ref, escapeLike(ref) + "%"}, args...),
+		` WHERE (m.session_id = ? OR m.session_id LIKE ? ESCAPE '\')`+" ORDER BY m.session_id",
+		[]any{ref, escapeLike(ref) + "%"},
 		func(r *sql.Rows) (id string, err error) { return id, r.Scan(&id) })
 	if err != nil {
 		return "", err
@@ -385,51 +315,24 @@ func ResolveSession(q db.Querier, ref string, s projects.Scope) (string, error) 
 }
 
 // SessionView returns a nil row when the session is absent or has no visible message.
-func SessionView(q db.Querier, ref string, s projects.Scope) (*SessionRow, []Message, error) {
-	id, err := ResolveSession(q, ref, s)
+func SessionView(q db.Querier, ref string) (*SessionRow, []Message, error) {
+	id, err := ResolveSession(q, ref)
 	if err != nil || id == "" {
 		return nil, nil, err
 	}
-	found, err := sessionRows(q, s, []string{id})
+	found, err := sessionRows(q, []string{id})
 	if err != nil {
 		return nil, nil, err
 	}
-	clauses, args := visible(s, "", "", nil, nil)
-	where := ""
-	for _, c := range clauses {
-		where += " AND " + c
-	}
-	messages, err := collect(q, "SELECT m.id, m.session_id, m.ts, m.role, m.project, "+label+", m.git_branch, m.text"+
-		from+" WHERE m.session_id = ?"+where+" ORDER BY m.ts, m.id", append([]any{id}, args...),
+	messages, err := collect(q, "SELECT m.id, m.session_id, m.ts, m.role, m.git_branch, m.text"+
+		from+" WHERE m.session_id = ? ORDER BY m.ts, m.id", []any{id},
 		func(r *sql.Rows) (m Message, err error) {
 			var branch sql.NullString
-			err = r.Scan(&m.ID, &m.SessionID, &m.TS, &m.Role, &m.Project, &m.Label, &branch, &m.Text)
+			err = r.Scan(&m.ID, &m.SessionID, &m.TS, &m.Role, &branch, &m.Text)
 			if branch.Valid {
 				m.GitBranch = &branch.String
 			}
 			return m, err
 		})
 	return found[id], messages, err
-}
-
-// Names maps project identities to display names; an identity without a
-// projects row (degraded localization) shows its last segment.
-func Names(q db.Querier, ids []string) (map[string]string, error) {
-	names := map[string]string{}
-	for _, id := range ids {
-		names[id] = id[strings.LastIndexAny(id, "/:")+1:]
-	}
-	if len(ids) == 0 {
-		return names, nil
-	}
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
-	rows, err := collect(q, "SELECT id, name FROM projects WHERE id IN ("+placeholders(len(ids))+")", args,
-		func(r *sql.Rows) (pair [2]string, err error) { return pair, r.Scan(&pair[0], &pair[1]) })
-	for _, p := range rows {
-		names[p[0]] = p[1]
-	}
-	return names, err
 }

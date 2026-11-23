@@ -27,9 +27,8 @@ var outputSchema = map[string]any{
 				"text":       map[string]any{"type": "string"},
 				"importance": map[string]any{"type": "integer", "minimum": 1, "maximum": 5},
 				"source_ts":  map[string]any{"type": "string"},
-				"project":    map[string]any{"type": "string"},
 			},
-			"required": []string{"kind", "text", "importance", "source_ts", "project"},
+			"required": []string{"kind", "text", "importance", "source_ts"},
 		}},
 		"closes": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
 	},
@@ -54,7 +53,7 @@ Chaque point a un ` + "`kind`" + ` : topic (un sujet), decision (un choix qui ti
 	`comme pousser une branche), pending (ce qui reste à faire à la fin de l'épisode) ou fact (sur la situation de %[1]s, ` +
 	`encore vrai dans un mois : l'état d'une PR, d'une CI ou d'un déploiement n'en est pas un). ` +
 	`Son ` + "`text`" + ` est une phrase autonome. Son ` + "`source_ts`" + ` est l'horodatage exact du message dont il vient, ` +
-	`recopié en entier, date comprise, sans les crochets. Son ` + "`project`" + ` est l'un des projets touchés, écrit tel quel.
+	`recopié en entier, date comprise, sans les crochets.
 ` + "`importance`" + ` : 5 pour une décision durable ou un fait important, 1 pour un détail.
 Un fait décrit la situation de %[1]s, pas une consigne sur la façon de travailler de Claude.
 Ne note rien sur des tiers, ne suppose rien, ne déduis rien qui ne soit écrit.
@@ -79,7 +78,7 @@ type openPoint struct {
 	text string
 }
 
-func prompt(projects []string, open []openPoint, body string) string {
+func prompt(open []openPoint, body string) string {
 	lines := make([]string, len(open))
 	for i, p := range open {
 		lines[i] = fmt.Sprintf("#%d %s", p.id, p.text)
@@ -88,5 +87,5 @@ func prompt(projects []string, open []openPoint, body string) string {
 	if pending == "" {
 		pending = "(aucun)"
 	}
-	return wrap(fmt.Sprintf("Projets touchés : %s\n\nPoints en suspens :\n%s\n\n%s", strings.Join(projects, ", "), pending, body))
+	return wrap(fmt.Sprintf("Points en suspens :\n%s\n\n%s", pending, body))
 }

@@ -15,11 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jplot/brain/internal/config"
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/lock"
 	"github.com/jplot/brain/internal/paths"
-	"github.com/jplot/brain/internal/projects"
 	"github.com/jplot/brain/internal/transcript"
 )
 
@@ -33,7 +31,7 @@ var parseClaude = transcript.ParseClaudeLine
 type Stats struct{ Files, Messages, Malformed, Failed int }
 
 // Run takes the index lock, so concurrent callers queue instead of reading the same offsets.
-func Run(p paths.Paths, cfg config.Config) (Stats, error) {
+func Run(p paths.Paths) (Stats, error) {
 	if err := p.EnsureHome(); err != nil {
 		return Stats{}, err
 	}
@@ -47,15 +45,15 @@ func Run(p paths.Paths, cfg config.Config) (Stats, error) {
 		return Stats{}, err
 	}
 	defer conn.Close()
-	stats, upgraded, err := upgrade(conn, p, cfg)
+	stats, upgraded, err := upgrade(conn, p)
 	if err != nil || upgraded {
 		return stats, err
 	}
-	return All(conn, p, cfg), nil
+	return All(conn, p), nil
 }
 
 // Refresh does nothing while another process indexes: that one is already doing the work.
-func Refresh(conn *sql.DB, p paths.Paths, cfg config.Config) error {
+func Refresh(conn *sql.DB, p paths.Paths) error {
 	if err := p.EnsureHome(); err != nil {
 		return err
 	}
@@ -64,27 +62,28 @@ func Refresh(conn *sql.DB, p paths.Paths, cfg config.Config) error {
 		return err
 	}
 	defer release()
-	if _, upgraded, err := upgrade(conn, p, cfg); err != nil || upgraded {
+	if _, upgraded, err := upgrade(conn, p); err != nil || upgraded {
 		return err
 	}
-	All(conn, p, cfg)
+	All(conn, p)
 	return nil
 }
 
-func All(conn *sql.DB, p paths.Paths, cfg config.Config) Stats {
+func All(conn *sql.DB, p paths.Paths) Stats {
 	var stats Stats
 	files, _ := filepath.Glob(filepath.Join(p.Transcripts, "*", "*.jsonl"))
 	for _, name := range files {
-		indexOne(conn, cfg, name, false, &stats)
+		indexOne(conn, name, false, &stats)
 	}
-	for _, name := range cfg.Journals {
-		indexOne(conn, cfg, name, true, &stats)
+	journals, _ := filepath.Glob(filepath.Join(p.Journals(), "*.jsonl"))
+	for _, name := range journals {
+		indexOne(conn, name, true, &stats)
 	}
 	return stats
 }
 
-func indexOne(conn *sql.DB, cfg config.Config, name string, journal bool, stats *Stats) {
-	done, err := indexFile(conn, cfg, name, journal)
+func indexOne(conn *sql.DB, name string, journal bool, stats *Stats) {
+	done, err := indexFile(conn, name, journal)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 	case err != nil:
@@ -97,7 +96,7 @@ func indexOne(conn *sql.DB, cfg config.Config, name string, journal bool, stats 
 	}
 }
 
-func upgrade(conn *sql.DB, p paths.Paths, cfg config.Config) (stats Stats, upgraded bool, err error) {
+func upgrade(conn *sql.DB, p paths.Paths) (stats Stats, upgraded bool, err error) {
 	var version int
 	if err := conn.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return stats, false, err
@@ -117,7 +116,7 @@ func upgrade(conn *sql.DB, p paths.Paths, cfg config.Config) (stats Stats, upgra
 	if err := db.RebuildIndex(conn); err != nil {
 		return stats, false, err
 	}
-	stats = All(conn, p, cfg)
+	stats = All(conn, p)
 	return stats, true, finishUpgrade(conn)
 }
 
@@ -146,7 +145,7 @@ var vacuum = func(conn *sql.DB) error {
 	return nil
 }
 
-func indexFile(conn *sql.DB, cfg config.Config, name string, journal bool) (Stats, error) {
+func indexFile(conn *sql.DB, name string, journal bool) (Stats, error) {
 	var stats Stats
 	f, err := os.Open(name)
 	if err != nil {
@@ -179,7 +178,7 @@ func indexFile(conn *sql.DB, cfg config.Config, name string, journal bool) (Stat
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return stats, err
 	}
-	r := &reader{tx: tx, cfg: cfg, name: name, journal: journal, forgotten: map[string]bool{}, resolved: map[string]string{}}
+	r := &reader{tx: tx, name: name, journal: journal, forgotten: map[string]bool{}}
 	if err := r.loadForgotten(); err != nil {
 		return stats, err
 	}
@@ -220,12 +219,9 @@ func forget(tx *sql.Tx, name string) error {
 
 type reader struct {
 	tx        *sql.Tx
-	cfg       config.Config
 	name      string
 	journal   bool
-	project   string
 	forgotten map[string]bool
-	resolved  map[string]string
 }
 
 func (r *reader) loadForgotten() error {
@@ -305,16 +301,8 @@ func (r *reader) store(item transcript.Item, stats *Stats) error {
 }
 
 func (r *reader) entry(e transcript.Entry, stats *Stats) error {
-	cwd := ""
-	if e.Cwd != nil {
-		cwd = *e.Cwd
-	}
-	project, err := r.projectOf(cwd, e.SessionID)
-	if err != nil {
-		return err
-	}
-	res, err := r.tx.Exec(`INSERT OR IGNORE INTO messages(key, session_id, file, ts, role, project, git_branch, text)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, e.Key, e.SessionID, r.name, e.TS, e.Role, project, e.GitBranch, e.Text)
+	res, err := r.tx.Exec(`INSERT OR IGNORE INTO messages(key, session_id, file, ts, role, git_branch, text)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, e.Key, e.SessionID, r.name, e.TS, e.Role, e.GitBranch, e.Text)
 	if err != nil {
 		return err
 	}
@@ -322,52 +310,16 @@ func (r *reader) entry(e transcript.Entry, stats *Stats) error {
 		return nil
 	}
 	stats.Messages++
-	var launchCwd, launchProject any
-	if cwd != "" {
-		launchCwd, launchProject = cwd, project
+	var launchCwd any
+	if e.Cwd != nil && *e.Cwd != "" {
+		launchCwd = *e.Cwd
 	}
-	_, err = r.tx.Exec(`INSERT INTO sessions(id, launch_cwd, launch_project, started_at, ended_at)
-		VALUES (?, ?, ?, ?, ?)
+	_, err = r.tx.Exec(`INSERT INTO sessions(id, launch_cwd, started_at, ended_at)
+		VALUES (?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 		launch_cwd = COALESCE(launch_cwd, excluded.launch_cwd),
-		launch_project = COALESCE(launch_project, excluded.launch_project),
 		started_at = COALESCE(MIN(started_at, excluded.started_at), excluded.started_at),
 		ended_at = COALESCE(MAX(ended_at, excluded.ended_at), excluded.ended_at)`,
-		e.SessionID, launchCwd, launchProject, e.TS, e.TS)
+		e.SessionID, launchCwd, e.TS, e.TS)
 	return err
-}
-
-func (r *reader) projectOf(cwd, session string) (string, error) {
-	var err error
-	switch {
-	case cwd != "":
-		// Without it, a repository seen while git is slow would cost 5 s per message.
-		if id, ok := r.resolved[cwd]; ok {
-			r.project = id
-		} else if r.project, err = projects.Resolve(ctx, r.tx, r.cfg, cwd); err == nil {
-			r.resolved[cwd] = r.project
-		}
-	case r.project == "":
-		r.project, err = r.remembered(session)
-	}
-	return r.project, err
-}
-
-func (r *reader) remembered(session string) (string, error) {
-	var project sql.NullString
-	err := r.tx.QueryRow("SELECT project FROM messages WHERE file = ? ORDER BY id DESC LIMIT 1", r.name).Scan(&project)
-	if err == nil {
-		return project.String, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return "", err
-	}
-	err = r.tx.QueryRow("SELECT launch_project FROM sessions WHERE id = ?", session).Scan(&project)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", err
-	}
-	if project.Valid && project.String != "" {
-		return project.String, nil
-	}
-	return projects.Roots, nil
 }

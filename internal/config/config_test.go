@@ -16,41 +16,38 @@ func write(t *testing.T, content string) string {
 	return path
 }
 
-func TestLoadAbsentGivesDefaults(t *testing.T) {
-	home, _ := os.UserHomeDir()
+func fakeGit(t *testing.T, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+}
+
+func TestLoadAbsentGivesZeroConfig(t *testing.T) {
 	got, err := Load(filepath.Join(t.TempDir(), "missing.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.User != "l'utilisateur" || got.Command != filepath.Join(home, ".local", "bin", "paul") ||
-		len(got.Roots) != 0 || len(got.Journals) != 0 || len(got.Labels) != 0 || got.Sync != nil {
+	if got.Sync != nil {
 		t.Fatalf("got %+v", got)
 	}
 }
 
-func TestLoadExpandsTilde(t *testing.T) {
-	home, _ := os.UserHomeDir()
-	got, err := Load(write(t, "roots = [\"~/code\"]\njournals = [\"~/j\"]\ncommand = \"~/bin/paul\"\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Roots[0] != filepath.Join(home, "code") || got.Journals[0] != filepath.Join(home, "j") ||
-		got.Command != filepath.Join(home, "bin", "paul") {
-		t.Fatalf("got %+v", got)
-	}
-}
-
-func TestLoadRejectsUnknownKey(t *testing.T) {
-	_, err := Load(write(t, "colour = 1\n"))
-	if err == nil || !strings.Contains(err.Error(), "colour") {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestLoadRejectsBadLabel(t *testing.T) {
-	_, err := Load(write(t, "[labels]\nx = \"perso\"\n"))
-	if err == nil || !strings.Contains(err.Error(), "x") {
-		t.Fatalf("err = %v", err)
+func TestLoadRejectsOldKeys(t *testing.T) {
+	for key, content := range map[string]string{
+		"roots":    "roots = [\"~/code\"]\n",
+		"labels":   "[labels]\nx = \"work\"\n",
+		"user":     "user = \"x\"\n",
+		"journals": "journals = []\n",
+		"command":  "command = \"\"\n",
+		"colour":   "colour = 1\n",
+	} {
+		_, err := Load(write(t, content))
+		if err == nil || !strings.Contains(err.Error(), key) {
+			t.Errorf("%s: err = %v", key, err)
+		}
 	}
 }
 
@@ -64,12 +61,16 @@ func TestLoadReadsSync(t *testing.T) {
 	}
 }
 
-func TestEmptyCommandDisablesLink(t *testing.T) {
-	got, err := Load(write(t, "command = \"\"\n"))
-	if err != nil {
-		t.Fatal(err)
+func TestUserNameFirstWord(t *testing.T) {
+	fakeGit(t, "echo 'Camille Dupont'")
+	if got := UserName(); got != "Camille" {
+		t.Fatalf("got %q", got)
 	}
-	if got.Command != "" {
-		t.Fatalf("Command = %q", got.Command)
+}
+
+func TestUserNameFallback(t *testing.T) {
+	fakeGit(t, "exit 0")
+	if got := UserName(); got != "l'utilisateur" {
+		t.Fatalf("got %q", got)
 	}
 }

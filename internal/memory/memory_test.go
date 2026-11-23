@@ -14,16 +14,9 @@ import (
 
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/paths"
-	"github.com/jplot/brain/internal/projects"
 )
 
-const (
-	pro     = "github.com/acme/pro"
-	pro2    = "github.com/acme/pro2"
-	perso   = "github.com/camille/perso"
-	pending = "github.com/camille/pending"
-	t0      = "2026-01-01T10:00:00.000Z"
-)
+const t0 = "2026-01-01T10:00:00.000Z"
 
 type fixture struct {
 	t  *testing.T
@@ -37,9 +30,6 @@ func newFixture(t *testing.T) *fixture {
 	dir := t.TempDir()
 	p := paths.Paths{Home: filepath.Join(dir, "home"), Transcripts: filepath.Join(dir, "t")}
 	f := &fixture{t: t, p: p, db: f2(t, p)}
-	for id, label := range map[string]string{pro: "work", pro2: "work", perso: "personal", pending: "unsorted"} {
-		f.exec("INSERT INTO projects(id, name, label, label_by, updated_at) VALUES (?, ?, ?, 'rule', ?)", id, id, label, t0)
-	}
 	return f
 }
 
@@ -69,12 +59,11 @@ func (f *fixture) count(query string, args ...any) int {
 	return n
 }
 
-func (f *fixture) episode(session, start, title, summary string, in ...string) int64 {
+func (f *fixture) episode(session, start, title, summary string) int64 {
 	f.t.Helper()
-	list := `["` + strings.Join(in, `","`) + `"]`
 	f.n++
-	res, err := f.db.Exec("INSERT INTO episodes(uid, session_id, start_ts, end_ts, title, summary, projects, created_at, updated_at)"+
-		" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", fmt.Sprint("e", f.n), session, start, start, title, summary, list, start, start)
+	res, err := f.db.Exec("INSERT INTO episodes(uid, session_id, start_ts, end_ts, title, summary, created_at, updated_at)"+
+		" VALUES (?, ?, ?, ?, ?, ?, ?, ?)", fmt.Sprint("e", f.n), session, start, start, title, summary, start, start)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -82,22 +71,18 @@ func (f *fixture) episode(session, start, title, summary string, in ...string) i
 	return id
 }
 
-func (f *fixture) defaultEpisode(in ...string) int64 {
-	if len(in) == 0 {
-		in = []string{pro}
-	}
-	return f.episode("s1", t0, "Titre", "Résumé", in...)
+func (f *fixture) defaultEpisode() int64 {
+	return f.episode("s1", t0, "Titre", "Résumé")
 }
 
 type pt struct {
-	project, kind, text string
-	importance          int
-	created             string
+	kind, text string
+	importance int
+	created    string
 }
 
 func (f *fixture) point(episode int64, o pt) int64 {
 	f.t.Helper()
-	o.project = cmp(o.project, pro)
 	o.kind = cmp(o.kind, "fact")
 	o.text = cmp(o.text, "un fait")
 	o.created = cmp(o.created, t0)
@@ -105,8 +90,8 @@ func (f *fixture) point(episode int64, o pt) int64 {
 		o.importance = 3
 	}
 	f.n++
-	res, err := f.db.Exec("INSERT INTO points(uid, episode_id, kind, project, text, importance, source_ts, created_at, updated_at)"+
-		" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", fmt.Sprint("p", f.n), episode, o.kind, o.project, o.text, o.importance, o.created, o.created, o.created)
+	res, err := f.db.Exec("INSERT INTO points(uid, episode_id, kind, text, importance, source_ts, created_at, updated_at)"+
+		" VALUES (?, ?, ?, ?, ?, ?, ?, ?)", fmt.Sprint("p", f.n), episode, o.kind, o.text, o.importance, o.created, o.created, o.created)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -121,17 +106,9 @@ func cmp(v, def string) string {
 	return v
 }
 
-func scope(current string, ids ...string) projects.Scope {
-	s := projects.Scope{Projects: map[string]bool{}, Current: current}
-	for _, id := range ids {
-		s.Projects[id] = true
-	}
-	return s
-}
-
-func (f *fixture) visible(s projects.Scope, flt PointFilter) []Point {
+func (f *fixture) visible(flt PointFilter) []Point {
 	f.t.Helper()
-	got, err := VisiblePoints(f.db, s, flt)
+	got, err := VisiblePoints(f.db, flt)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -186,8 +163,8 @@ func (f *fixture) assertAbsentFromFiles(marker string) {
 }
 
 func (f *fixture) message(session, text string) {
-	f.exec("INSERT INTO messages(key, session_id, file, ts, role, project, text) VALUES (?, ?, 'f', ?, 'user', ?, ?)",
-		fmt.Sprint("k", session, text), session, t0, pro, text)
+	f.exec("INSERT INTO messages(key, session_id, file, ts, role, text) VALUES (?, ?, 'f', ?, 'user', ?)",
+		fmt.Sprint("k", session, text), session, t0, text)
 }
 
 func TestRebuildKeepsMemories(t *testing.T) {
@@ -198,10 +175,10 @@ func TestRebuildKeepsMemories(t *testing.T) {
 	if err := db.RebuildIndex(f.db); err != nil {
 		t.Fatal(err)
 	}
-	if n := len(f.visible(projects.Everything, PointFilter{})); n != 1 {
+	if n := len(f.visible(PointFilter{})); n != 1 {
 		t.Fatalf("points: %d", n)
 	}
-	eps, err := VisibleEpisodes(f.db, projects.Everything, "s1")
+	eps, err := VisibleEpisodes(f.db, "s1")
 	if err != nil || len(eps) != 1 {
 		t.Fatalf("episodes: %v %v", eps, err)
 	}
@@ -211,82 +188,31 @@ func TestRebuildKeepsMemories(t *testing.T) {
 }
 
 func TestPointOutsideScopeInvisible(t *testing.T) {
-	f := newFixture(t)
-	e := f.defaultEpisode()
-	f.point(e, pt{project: pro, text: "inside"})
-	f.point(e, pt{project: perso, text: "outside", kind: "decision"})
-	equal(t, texts(f.visible(scope(pro, pro), PointFilter{})), []string{"inside"})
-	equal(t, sorted(texts(f.visible(projects.Everything, PointFilter{}))), []string{"inside", "outside"})
+	t.Skip("Task 9")
 }
 
 func TestFactSameLabelVisible(t *testing.T) {
-	f := newFixture(t)
-	e := f.defaultEpisode(pro, pro2)
-	f.point(e, pt{project: pro2, text: "pro fact"})
-	got := f.visible(scope(pro, pro), PointFilter{})
-	equal(t, texts(got), []string{"pro fact"})
-	if got[0].Label != "work" {
-		t.Fatalf("label %q", got[0].Label)
-	}
+	t.Skip("Task 9")
 }
 
 func TestFactOtherLabelInvisible(t *testing.T) {
-	f := newFixture(t)
-	e := f.defaultEpisode(pro, perso, pending)
-	f.point(e, pt{project: perso, text: "personal fact"})
-	f.point(e, pt{project: pending, text: "pending fact"})
-	equal(t, texts(f.visible(scope(pro, pro), PointFilter{})), []string{})
-	f.point(e, pt{project: pro2, text: "pro fact"})
-	equal(t, texts(f.visible(scope(pending, pending), PointFilter{})), []string{"pending fact"})
-	equal(t, texts(f.visible(scope(perso, perso), PointFilter{})), []string{"personal fact"})
+	t.Skip("Task 9")
 }
 
 func TestDecisionSameLabelInvisible(t *testing.T) {
-	f := newFixture(t)
-	e := f.defaultEpisode(pro, pro2)
-	for _, kind := range []string{"decision", "pending", "topic"} {
-		f.point(e, pt{project: pro2, kind: kind, text: kind})
-	}
-	equal(t, texts(f.visible(scope(pro, pro), PointFilter{})), []string{})
+	t.Skip("Task 9")
 }
 
 func TestAccessOpensPoints(t *testing.T) {
-	f := newFixture(t)
-	e := f.defaultEpisode(pro, perso)
-	f.point(e, pt{project: perso, kind: "decision", text: "at personal"})
-	f.point(e, pt{project: pro, kind: "decision", text: "at pro"})
-	equal(t, sorted(texts(f.visible(scope(pro, pro, perso), PointFilter{}))), []string{"at personal", "at pro"})
-	equal(t, texts(f.visible(scope(perso, perso), PointFilter{})), []string{"at personal"})
+	t.Skip("Task 9")
 }
 
 func TestAccessToProDoesNotOpenSecondPro(t *testing.T) {
-	f := newFixture(t)
-	e := f.defaultEpisode(perso, pro, pro2)
-	f.point(e, pt{project: pro, kind: "decision", text: "pro decision"})
-	f.point(e, pt{project: pro, text: "pro fact"})
-	f.point(e, pt{project: pro2, text: "second pro fact"})
-	equal(t, sorted(texts(f.visible(scope(perso, perso, pro), PointFilter{}))), []string{"pro decision", "pro fact"})
+	t.Skip("Task 9")
 }
 
 func TestSummaryHiddenWhenEpisodeLeavesScope(t *testing.T) {
-	f := newFixture(t)
-	f.episode("s1", "2026-01-01T10:00:00.000Z", "mixed", "secret", pro, perso)
-	f.episode("s1", "2026-01-01T11:00:00.000Z", "pro", "ok", pro)
-	f.episode("s1", "2026-01-01T12:00:00.000Z", "personal", "hidden", perso)
-	got, err := VisibleEpisodes(f.db, scope(pro, pro), "s1")
-	if err != nil || len(got) != 2 {
-		t.Fatalf("%v %v", got, err)
-	}
-	if got[0].Title != nil || got[0].Summary != nil || !slices.Equal(got[0].Projects, []string{pro, perso}) {
-		t.Fatalf("mixed episode leaks: %+v", got[0])
-	}
-	if *got[1].Title != "pro" || *got[1].Summary != "ok" {
-		t.Fatalf("pro episode: %+v", got[1])
-	}
-	all, _ := VisibleEpisodes(f.db, projects.Everything, "s1")
-	if len(all) != 3 || *all[0].Title != "mixed" {
-		t.Fatalf("everything: %+v", all)
-	}
+	t.Skip("Task 9")
 }
 
 func TestCorrectionMarksPoint(t *testing.T) {
@@ -296,7 +222,7 @@ func TestCorrectionMarksPoint(t *testing.T) {
 	if err := CorrectPoint(f.db, id, &text, &imp); err != nil {
 		t.Fatal(err)
 	}
-	got := f.visible(projects.Everything, PointFilter{})[0]
+	got := f.visible(PointFilter{})[0]
 	if got.Text != text || got.Importance != 5 || !got.Corrected {
 		t.Fatalf("%+v", got)
 	}
@@ -312,7 +238,7 @@ func TestCorrectionMasksSecrets(t *testing.T) {
 	if err := CorrectPoint(f.db, id, &text, nil); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(f.visible(projects.Everything, PointFilter{})[0].Text, "abcdefghijklmnopqrstuvwxyz0123456789") {
+	if strings.Contains(f.visible(PointFilter{})[0].Text, "abcdefghijklmnopqrstuvwxyz0123456789") {
 		t.Fatal("secret kept")
 	}
 }
@@ -329,7 +255,7 @@ func TestCorrectionInvalid(t *testing.T) {
 			t.Fatalf("importance %d accepted", bad)
 		}
 	}
-	got := f.visible(projects.Everything, PointFilter{})[0]
+	got := f.visible(PointFilter{})[0]
 	if got.Text != "un fait" || got.Corrected {
 		t.Fatalf("%+v", got)
 	}
@@ -340,12 +266,11 @@ func TestSearchPointsWithoutAccents(t *testing.T) {
 	e := f.defaultEpisode()
 	f.point(e, pt{text: "Décision sur la mémoire"})
 	f.point(e, pt{text: "autre chose"})
-	equal(t, texts(f.visible(projects.Everything, PointFilter{Text: "memoire decision"})), []string{"Décision sur la mémoire"})
-	if n := len(f.visible(projects.Everything, PointFilter{Text: "   "})); n != 2 {
+	equal(t, texts(f.visible(PointFilter{Text: "memoire decision"})), []string{"Décision sur la mémoire"})
+	if n := len(f.visible(PointFilter{Text: "   "})); n != 2 {
 		t.Fatalf("blank text filtered: %d", n)
 	}
-	equal(t, texts(f.visible(projects.Everything, PointFilter{Text: `"(*)!`})), []string{})
-	equal(t, texts(f.visible(scope(perso, perso), PointFilter{Text: "memoire"})), []string{})
+	equal(t, texts(f.visible(PointFilter{Text: `"(*)!`})), []string{})
 }
 
 func TestFiltersAndOrder(t *testing.T) {
@@ -354,18 +279,15 @@ func TestFiltersAndOrder(t *testing.T) {
 	f.point(e, pt{kind: "pending", text: "a", importance: 2, created: "2026-01-01T10:00:00.000Z"})
 	b := f.point(e, pt{kind: "pending", text: "b", importance: 5, created: "2026-01-01T09:00:00.000Z"})
 	f.point(e, pt{kind: "pending", text: "c", importance: 5, created: "2026-01-01T11:00:00.000Z"})
-	f.point(e, pt{kind: "decision", text: "d", importance: 1, project: perso})
-	all := projects.Everything
-	equal(t, texts(f.visible(all, PointFilter{})), []string{"c", "b", "a", "d"})
-	equal(t, texts(f.visible(all, PointFilter{Kind: "pending", Limit: 2})), []string{"c", "b"})
-	equal(t, texts(f.visible(all, PointFilter{Project: perso})), []string{"d"})
-	equal(t, texts(f.visible(all, PointFilter{Label: "personal"})), []string{"d"})
-	equal(t, texts(f.visible(all, PointFilter{PointID: b})), []string{"b"})
-	equal(t, texts(f.visible(all, PointFilter{EpisodeID: e + 1})), []string{})
+	f.point(e, pt{kind: "decision", text: "d", importance: 1})
+	equal(t, texts(f.visible(PointFilter{})), []string{"c", "b", "a", "d"})
+	equal(t, texts(f.visible(PointFilter{Kind: "pending", Limit: 2})), []string{"c", "b"})
+	equal(t, texts(f.visible(PointFilter{PointID: b})), []string{"b"})
+	equal(t, texts(f.visible(PointFilter{EpisodeID: e + 1})), []string{})
 	if err := ClosePoint(f.db, b); err != nil {
 		t.Fatal(err)
 	}
-	equal(t, texts(f.visible(all, PointFilter{OpenOnly: true})), []string{"c", "a"})
+	equal(t, texts(f.visible(PointFilter{OpenOnly: true})), []string{"c", "a"})
 }
 
 func TestSinceUntilAreInclusiveDays(t *testing.T) {
@@ -374,20 +296,14 @@ func TestSinceUntilAreInclusiveDays(t *testing.T) {
 	for _, ts := range []string{"2025-12-31T00:00:00.000Z", "2026-01-15T12:00:00.000Z", "2026-02-20T12:00:00.000Z"} {
 		f.point(e, pt{text: ts[:10], created: ts})
 	}
-	equal(t, texts(f.visible(projects.Everything, PointFilter{Since: "2026-01-15", Until: "2026-01-15"})), []string{"2026-01-15"})
-	if _, err := VisiblePoints(f.db, projects.Everything, PointFilter{Since: "hier"}); err == nil {
+	equal(t, texts(f.visible(PointFilter{Since: "2026-01-15", Until: "2026-01-15"})), []string{"2026-01-15"})
+	if _, err := VisiblePoints(f.db, PointFilter{Since: "hier"}); err == nil {
 		t.Fatal("bad date accepted")
 	}
 }
 
 func TestPointWithoutKnownProject(t *testing.T) {
-	f := newFixture(t)
-	f.point(f.defaultEpisode(), pt{project: "github.com/unknown/x", text: "orphan"})
-	equal(t, texts(f.visible(scope(pro, pro), PointFilter{})), []string{})
-	got := f.visible(projects.Everything, PointFilter{})
-	if len(got) != 1 || got[0].Label != "unsorted" {
-		t.Fatalf("%+v", got)
-	}
+	t.Skip("Task 9")
 }
 
 func TestForgetPointStalesSummary(t *testing.T) {
@@ -397,10 +313,10 @@ func TestForgetPointStalesSummary(t *testing.T) {
 	if err := ForgetPoint(f.db, id); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.visible(projects.Everything, PointFilter{})) != 0 || f.ftsCount("zebre") != 0 {
+	if len(f.visible(PointFilter{})) != 0 || f.ftsCount("zebre") != 0 {
 		t.Fatal("point survives")
 	}
-	eps, _ := VisibleEpisodes(f.db, projects.Everything, "s1")
+	eps, _ := VisibleEpisodes(f.db, "s1")
 	if !eps[0].SummaryStale {
 		t.Fatal("summary not stale")
 	}
@@ -428,7 +344,7 @@ func TestWritesBumpUpdatedAt(t *testing.T) {
 	if err := CorrectPoint(f.db, id, &text, nil); err != nil {
 		t.Fatal(err)
 	}
-	first := f.visible(projects.Everything, PointFilter{})[0]
+	first := f.visible(PointFilter{})[0]
 	if first.UpdatedAt == t0 {
 		t.Fatal("correction kept updated_at")
 	}
@@ -436,7 +352,7 @@ func TestWritesBumpUpdatedAt(t *testing.T) {
 	if err := ClosePoint(f.db, id); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.visible(projects.Everything, PointFilter{})[0]; got.UpdatedAt == t0 || got.ClosedAt == nil {
+	if got := f.visible(PointFilter{})[0]; got.UpdatedAt == t0 || got.ClosedAt == nil {
 		t.Fatalf("close kept updated_at: %+v", got)
 	}
 }
@@ -461,7 +377,7 @@ func TestForgetSessionAbsentFromFile(t *testing.T) {
 	marker := "zephyrmarqueur"
 	f.message("s9", "message "+marker)
 	f.exec("INSERT INTO sessions(id) VALUES ('s9')")
-	e := f.episode("s9", t0, "titre "+marker, "resume "+marker, pro)
+	e := f.episode("s9", t0, "titre "+marker, "resume "+marker)
 	f.point(e, pt{text: "point " + marker})
 	f.exec("INSERT INTO summary_failures(session_id, attempts, last_at) VALUES ('s9', 1, 't')")
 	if err := ForgetSession(f.db, "s9"); err != nil {
@@ -565,7 +481,7 @@ func TestFailedCorrectionChangesNothing(t *testing.T) {
 	if err := CorrectPoint(f.db, id, &text, &imp); err == nil {
 		t.Fatal("expected failure")
 	}
-	got := f.visible(projects.Everything, PointFilter{})[0]
+	got := f.visible(PointFilter{})[0]
 	if got.Text != "un fait" || got.Importance != 3 || got.Corrected {
 		t.Fatalf("%+v", got)
 	}
@@ -575,7 +491,7 @@ func TestForgetSessionReachesFileWithAnotherConnectionOpen(t *testing.T) {
 	f := newFixture(t)
 	marker := "zephyrautreconnexion"
 	f.message("s9", "message "+marker)
-	e := f.episode("s9", t0, "titre "+marker, "resume "+marker, pro)
+	e := f.episode("s9", t0, "titre "+marker, "resume "+marker)
 	f.point(e, pt{text: "point " + marker})
 	f2(t, f.p)
 	if err := ForgetSession(f.db, "s9"); err != nil {

@@ -1,28 +1,24 @@
-// Package memory reads and edits the points and episodes the summarizer wrote, bounded by a scope.
+// Package memory reads and edits the points and episodes the summarizer wrote.
 package memory
 
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/mask"
-	"github.com/jplot/brain/internal/projects"
 	"github.com/jplot/brain/internal/search"
 )
 
 const (
 	utc       = "2006-01-02T15:04:05.000Z"
 	day       = "2006-01-02"
-	unsorted  = "unsorted"
-	pointCols = "p.id, p.episode_id, p.uid, p.kind, p.project, p.text, p.importance, p.source_ts, p.created_at," +
-		" p.closed_at, p.corrected, COALESCE(pr.label, 'unsorted'), p.updated_at"
+	pointCols = "p.id, p.episode_id, p.uid, p.kind, p.text, p.importance, p.source_ts, p.created_at," +
+		" p.closed_at, p.corrected, p.updated_at"
 )
 
 var (
@@ -37,20 +33,19 @@ type ErrPointNotFound struct{ ID int64 }
 func (e *ErrPointNotFound) Error() string { return fmt.Sprintf("point introuvable : %d", e.ID) }
 
 type Point struct {
-	ID, EpisodeID            int64
-	UID, Kind, Project, Text string
-	Importance               int
-	SourceTS, CreatedAt      string
-	ClosedAt                 *string
-	Corrected                bool
-	Label, UpdatedAt         string
+	ID, EpisodeID       int64
+	UID, Kind, Text     string
+	Importance          int
+	SourceTS, CreatedAt string
+	ClosedAt            *string
+	Corrected           bool
+	UpdatedAt           string
 }
 
 type Episode struct {
 	ID                             int64
 	UID, SessionID, StartTS, EndTS string
 	Title, Summary                 *string
-	Projects                       []string
 	CreatedAt                      string
 	SummaryStale                   bool
 	UpdatedAt                      string
@@ -58,11 +53,11 @@ type Episode struct {
 
 // Since and Until are calendar days (YYYY-MM-DD) in the local zone, both included.
 type PointFilter struct {
-	Kind, Project, Label, Text string
-	OpenOnly                   bool
-	PointID, EpisodeID         int64
-	Since, Until               string
-	Limit                      int
+	Kind, Text         string
+	OpenOnly           bool
+	PointID, EpisodeID int64
+	Since, Until       string
+	Limit              int
 }
 
 func now() string { return time.Now().UTC().Format(utc) }
@@ -76,55 +71,15 @@ func dayStart(s string, plus int) (string, error) {
 	return time.Date(y, m, d+plus, 0, 0, 0, 0, time.Local).UTC().Format(utc), nil
 }
 
-func placeholders(n int) string {
-	if n == 0 {
-		return ""
-	}
-	return strings.Repeat("?,", n-1) + "?"
-}
-
-func scopeClause(q db.Querier, s projects.Scope) (clauses []string, args []any, err error) {
-	if s.Projects == nil {
-		return nil, nil, nil
-	}
-	ids := make([]string, 0, len(s.Projects))
-	for id := range s.Projects {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-	clause := "p.project IN (" + placeholders(len(ids)) + ")"
-	for _, id := range ids {
-		args = append(args, id)
-	}
-	var current string
-	err = q.QueryRowContext(background, "SELECT label FROM projects WHERE id = ?", s.Current).Scan(&current)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, nil, err
-	}
-	if current != "" && current != unsorted {
-		clause += " OR (p.kind = 'fact' AND pr.label = ?)"
-		args = append(args, current)
-	}
-	return []string{"(" + clause + ")", "pr.id IS NOT NULL"}, args, nil
-}
-
-func VisiblePoints(q db.Querier, s projects.Scope, f PointFilter) ([]Point, error) {
-	clauses, args, err := scopeClause(q, s)
-	if err != nil {
-		return nil, err
-	}
+func VisiblePoints(q db.Querier, f PointFilter) ([]Point, error) {
+	var clauses []string
+	var args []any
 	add := func(clause string, arg any) {
 		clauses = append(clauses, clause)
 		args = append(args, arg)
 	}
 	if f.Kind != "" {
 		add("p.kind = ?", f.Kind)
-	}
-	if f.Project != "" {
-		add("p.project = ?", f.Project)
-	}
-	if f.Label != "" {
-		add("COALESCE(pr.label, 'unsorted') = ?", f.Label)
 	}
 	if f.PointID != 0 {
 		add("p.id = ?", f.PointID)
@@ -164,7 +119,7 @@ func VisiblePoints(q db.Querier, s projects.Scope, f PointFilter) ([]Point, erro
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := q.QueryContext(background, "SELECT "+pointCols+" FROM points p LEFT JOIN projects pr ON pr.id = p.project"+
+	rows, err := q.QueryContext(background, "SELECT "+pointCols+" FROM points p"+
 		where+" ORDER BY p.importance DESC, p.created_at DESC, p.id DESC LIMIT ?", append(args, limit)...)
 	if err != nil {
 		return nil, err
@@ -174,8 +129,8 @@ func VisiblePoints(q db.Querier, s projects.Scope, f PointFilter) ([]Point, erro
 	for rows.Next() {
 		var p Point
 		var closed sql.NullString
-		if err := rows.Scan(&p.ID, &p.EpisodeID, &p.UID, &p.Kind, &p.Project, &p.Text, &p.Importance, &p.SourceTS,
-			&p.CreatedAt, &closed, &p.Corrected, &p.Label, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.EpisodeID, &p.UID, &p.Kind, &p.Text, &p.Importance, &p.SourceTS,
+			&p.CreatedAt, &closed, &p.Corrected, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if closed.Valid {
@@ -186,8 +141,8 @@ func VisiblePoints(q db.Querier, s projects.Scope, f PointFilter) ([]Point, erro
 	return out, rows.Err()
 }
 
-func VisibleEpisodes(q db.Querier, s projects.Scope, sessionID string) ([]Episode, error) {
-	rows, err := q.QueryContext(background, "SELECT id, uid, session_id, start_ts, end_ts, title, summary, projects,"+
+func VisibleEpisodes(q db.Querier, sessionID string) ([]Episode, error) {
+	rows, err := q.QueryContext(background, "SELECT id, uid, session_id, start_ts, end_ts, title, summary,"+
 		" created_at, summary_stale, updated_at FROM episodes WHERE session_id = ? ORDER BY start_ts", sessionID)
 	if err != nil {
 		return nil, err
@@ -197,12 +152,8 @@ func VisibleEpisodes(q db.Querier, s projects.Scope, sessionID string) ([]Episod
 	for rows.Next() {
 		var e Episode
 		var title, summary sql.NullString
-		var list string
-		if err := rows.Scan(&e.ID, &e.UID, &e.SessionID, &e.StartTS, &e.EndTS, &title, &summary, &list,
+		if err := rows.Scan(&e.ID, &e.UID, &e.SessionID, &e.StartTS, &e.EndTS, &title, &summary,
 			&e.CreatedAt, &e.SummaryStale, &e.UpdatedAt); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal([]byte(list), &e.Projects); err != nil {
 			return nil, err
 		}
 		if title.Valid {
@@ -210,20 +161,6 @@ func VisibleEpisodes(q db.Querier, s projects.Scope, sessionID string) ([]Episod
 		}
 		if summary.Valid {
 			e.Summary = &summary.String
-		}
-		if s.Projects != nil {
-			inside := 0
-			for _, p := range e.Projects {
-				if s.Projects[p] {
-					inside++
-				}
-			}
-			if inside == 0 {
-				continue
-			}
-			if inside < len(e.Projects) {
-				e.Title, e.Summary = nil, nil
-			}
 		}
 		out = append(out, e)
 	}

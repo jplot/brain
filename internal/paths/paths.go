@@ -16,6 +16,13 @@ func (p Paths) SummaryLock() string { return filepath.Join(p.Home, "summary.lock
 func (p Paths) InstallLock() string { return filepath.Join(p.Home, "install.lock") }
 func (p Paths) Bin() string         { return filepath.Join(p.Home, "bin") }
 func (p Paths) Config() string      { return filepath.Join(p.Home, "config.toml") }
+func (p Paths) Journals() string    { return filepath.Join(p.Home, "journals") }
+func (p Paths) SyncDir() string     { return filepath.Join(p.Home, "sync") }
+
+func (p Paths) BinDir() string {
+	user, _ := os.UserHomeDir()
+	return envOr("PAUL_BIN_DIR", filepath.Join(user, ".local", "bin"))
+}
 
 // EnsureHome chmods even when the directory exists: MkdirAll leaves an
 // existing directory's mode untouched.

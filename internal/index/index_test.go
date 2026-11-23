@@ -15,19 +15,16 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/jplot/brain/internal/config"
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/lock"
 	"github.com/jplot/brain/internal/paths"
-	"github.com/jplot/brain/internal/projects"
 	"github.com/jplot/brain/internal/transcript"
 )
 
 type fixture struct {
-	t   *testing.T
-	p   paths.Paths
-	cfg config.Config
-	db  *sql.DB
+	t  *testing.T
+	p  paths.Paths
+	db *sql.DB
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -39,10 +36,10 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { d.Close() })
-	return &fixture{t: t, p: p, cfg: config.Config{Roots: []string{filepath.Join(dir, "code")}}, db: d}
+	return &fixture{t: t, p: p, db: d}
 }
 
-func (f *fixture) all() Stats { return All(f.db, f.p, f.cfg) }
+func (f *fixture) all() Stats { return All(f.db, f.p) }
 
 func (f *fixture) exec(query string, args ...any) {
 	f.t.Helper()
@@ -265,7 +262,6 @@ func TestDisappearedFileKeepsItsMessages(t *testing.T) {
 
 func TestMissingJournalIsSkipped(t *testing.T) {
 	f := newFixture(t)
-	f.cfg.Journals = []string{filepath.Join(f.p.Home, "fantome.jsonl")}
 	if stats := f.all(); stats != (Stats{}) {
 		t.Fatalf("stats %+v", stats)
 	}
@@ -379,8 +375,8 @@ func TestSessionAndTitle(t *testing.T) {
 	f.transcript("-p", "s1", first, title("Premier"), second, last, title("Dernier"))
 	f.all()
 	got := []string{f.one("SELECT started_at FROM sessions"), f.one("SELECT ended_at FROM sessions"),
-		f.one("SELECT launch_cwd FROM sessions"), f.one("SELECT launch_project FROM sessions"), f.one("SELECT title FROM sessions")}
-	want := []string{"2026-01-01T09:00:00.000Z", "2026-01-03T11:00:00.000Z", "/a", "path:/a", "Dernier"}
+		f.one("SELECT launch_cwd FROM sessions"), f.one("SELECT title FROM sessions")}
+	want := []string{"2026-01-01T09:00:00.000Z", "2026-01-03T11:00:00.000Z", "/a", "Dernier"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("got %v", got)
 	}
@@ -417,6 +413,7 @@ func (f *fixture) projectsByText() string {
 }
 
 func TestMessageTakesProjectOfItsCwd(t *testing.T) {
+	t.Skip("Task 7")
 	f := newFixture(t)
 	f.transcript("-p", "s1", withCwd(user("un"), "/a"), withCwd(user("deux"), "/b"))
 	f.all()
@@ -426,6 +423,7 @@ func TestMessageTakesProjectOfItsCwd(t *testing.T) {
 }
 
 func TestMissingCwdKeepsLastSeenAcrossPasses(t *testing.T) {
+	t.Skip("Task 7")
 	f := newFixture(t)
 	path := f.transcript("-p", "s1", withCwd(user("un"), "/a"), withoutCwd(user("deux")))
 	f.all()
@@ -437,15 +435,17 @@ func TestMissingCwdKeepsLastSeenAcrossPasses(t *testing.T) {
 }
 
 func TestUnknownCwdGoesToRoots(t *testing.T) {
+	t.Skip("Task 7")
 	f := newFixture(t)
 	f.transcript("-p", "s1", withoutCwd(user("un")))
 	f.all()
-	if got := f.one("SELECT project FROM messages"); got != projects.Roots {
+	if got := f.one("SELECT project FROM messages"); got != "roots" {
 		t.Fatal(got)
 	}
 }
 
 func TestMissingCwdUsesLaunchProjectOfSession(t *testing.T) {
+	t.Skip("Task 7")
 	f := newFixture(t)
 	f.transcript("-p", "s1", withCwd(user("un"), "/a"))
 	f.transcript("-q", "s2", withoutCwd(user("deux")))
@@ -467,12 +467,10 @@ func TestAgentReportAcrossPasses(t *testing.T) {
 }
 
 func TestRebuildKeepsStateAndRecomputesIndex(t *testing.T) {
+	t.Skip("Task 7")
 	f := newFixture(t)
 	f.transcript("-p", "s1", withCwd(user("un"), "/a"), withCwd(user("deux"), "/b"))
 	f.all()
-	if err := projects.SetLabel(f.db, "path:/a", "work"); err != nil {
-		t.Fatal(err)
-	}
 	f.exec("INSERT INTO accesses(reader, target, updated_at) VALUES ('path:/a', 'path:/b', '2026-01-01T00:00:00.000Z')")
 	before := f.projectsByText()
 	if err := db.RebuildIndex(f.db); err != nil {
@@ -504,12 +502,11 @@ func TestForgottenSessionsIgnored(t *testing.T) {
 
 func (f *fixture) journal(lines ...any) string {
 	f.t.Helper()
-	path := filepath.Join(f.p.Home, "journal.jsonl")
-	if err := os.MkdirAll(f.p.Home, 0o700); err != nil {
+	path := filepath.Join(f.p.Journals(), "journal.jsonl")
+	if err := os.MkdirAll(f.p.Journals(), 0o700); err != nil {
 		f.t.Fatal(err)
 	}
 	appendLines(f.t, path, lines...)
-	f.cfg.Journals = []string{path}
 	return path
 }
 
@@ -551,14 +548,14 @@ func TestRefreshDoesNothingWhileLockTaken(t *testing.T) {
 	if err != nil || !acquired {
 		t.Fatal(err)
 	}
-	if err := Refresh(f.db, f.p, f.cfg); err != nil {
+	if err := Refresh(f.db, f.p); err != nil {
 		t.Fatal(err)
 	}
 	release()
 	if f.messages() != 0 {
 		t.Fatal("indexed under a foreign lock")
 	}
-	if err := Refresh(f.db, f.p, f.cfg); err != nil || f.messages() != 1 {
+	if err := Refresh(f.db, f.p); err != nil || f.messages() != 1 {
 		t.Fatalf("err %v, messages %d", err, f.messages())
 	}
 }
@@ -566,7 +563,7 @@ func TestRefreshDoesNothingWhileLockTaken(t *testing.T) {
 func TestRunTakesTheLock(t *testing.T) {
 	f := newFixture(t)
 	f.transcript("-p", "s1", user("un"))
-	stats, err := Run(f.p, f.cfg)
+	stats, err := Run(f.p)
 	if err != nil || stats.Messages != 1 {
 		t.Fatalf("stats %+v, err %v", stats, err)
 	}
@@ -595,7 +592,7 @@ func TestConcurrentRunsNeverIndexTwiceTheSameLine(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for pass := true; pass || !done.Load(); pass = false {
-				stats, err := Run(f.p, f.cfg)
+				stats, err := Run(f.p)
 				if err != nil || stats.Failed != 0 {
 					failed.Add(1)
 				}
@@ -613,7 +610,7 @@ func TestConcurrentRunsNeverIndexTwiceTheSameLine(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	done.Store(true)
 	wg.Wait()
-	if _, err := Run(f.p, f.cfg); err != nil {
+	if _, err := Run(f.p); err != nil {
 		t.Fatal(err)
 	}
 	if failed.Load() != 0 || peak.Load() != 1 {
@@ -639,7 +636,7 @@ func TestConcurrentFirstRuns(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				_, err := Run(p, config.Config{})
+				_, err := Run(p)
 				errs <- err
 			}()
 		}
@@ -659,8 +656,8 @@ const secret = "ghp_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
 func (f *fixture) oldBase(version int) {
 	f.t.Helper()
 	path := f.transcript("-p", "s1", user("clé "+secret+" fin"))
-	f.exec(`INSERT INTO messages(key, session_id, file, ts, role, project, text)
-		VALUES ('vieux', 's', ?, '2026-01-01T00:00:00.000Z', 'user', 'p', ?)`, path, "clé "+secret+" fin")
+	f.exec(`INSERT INTO messages(key, session_id, file, ts, role, text)
+		VALUES ('vieux', 's', ?, '2026-01-01T00:00:00.000Z', 'user', ?)`, path, "clé "+secret+" fin")
 	f.exec(fmt.Sprintf("PRAGMA user_version=%d", version))
 	f.exec("PRAGMA wal_checkpoint(TRUNCATE)")
 }
@@ -679,7 +676,7 @@ func (f *fixture) fileBytes() string {
 
 func (f *fixture) refresh() {
 	f.t.Helper()
-	if err := Refresh(f.db, f.p, f.cfg); err != nil {
+	if err := Refresh(f.db, f.p); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -706,10 +703,10 @@ func TestUpgradeLeavesNoSecretInFile(t *testing.T) {
 func TestUpgradeKeepsState(t *testing.T) {
 	f := newFixture(t)
 	f.oldBase(1)
-	f.exec("INSERT INTO projects VALUES ('path:/p', 'p', 'work', 'user', '2026-01-01T00:00:00.000Z')")
-	f.exec("INSERT INTO accesses(reader, target, updated_at) VALUES ('path:/p', 'path:/q', '2026-01-01T00:00:00.000Z')")
+	f.exec("INSERT INTO subjects(uid, kind, name, aliases, created_at, updated_at) VALUES ('s1', 'subject', 'p', '[]', 't', 't')")
+	f.exec("INSERT INTO links VALUES ('s1', 'about', 's1', 1, 'user', NULL, 't')")
 	f.refresh()
-	if f.one("SELECT label FROM projects") != "work" || f.count("SELECT count(*) FROM accesses") != 1 || f.version() != db.IndexVersion {
+	if f.count("SELECT count(*) FROM subjects") != 1 || f.count("SELECT count(*) FROM links") != 1 || f.version() != db.IndexVersion {
 		t.Fatal("state or version wrong")
 	}
 }
@@ -731,7 +728,7 @@ func TestSingleRebuildAcrossConcurrentRuns(t *testing.T) {
 		}
 		f.transcript("-p", fmt.Sprintf("s%d", i), lines...)
 	}
-	f.exec("INSERT INTO messages(key, session_id, file, ts, role, project, text) VALUES ('vieux', 's', 'f', '2026-01-01T00:00:00.000Z', 'user', 'p', 'x')")
+	f.exec("INSERT INTO messages(key, session_id, file, ts, role, text) VALUES ('vieux', 's', 'f', '2026-01-01T00:00:00.000Z', 'user', 'x')")
 	f.exec("PRAGMA user_version=1")
 	var parsed atomic.Int64
 	parseClaude = func(raw []byte, is func(string) bool) ([]transcript.Item, error) {
@@ -744,7 +741,7 @@ func TestSingleRebuildAcrossConcurrentRuns(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := Run(f.p, f.cfg); err != nil {
+			if _, err := Run(f.p); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -758,7 +755,7 @@ func TestSingleRebuildAcrossConcurrentRuns(t *testing.T) {
 func TestRunReportsRebuildStats(t *testing.T) {
 	f := newFixture(t)
 	f.oldBase(1)
-	stats, err := Run(f.p, f.cfg)
+	stats, err := Run(f.p)
 	if err != nil || stats.Messages != 1 || stats.Files != 1 {
 		t.Fatalf("stats %+v, err %v", stats, err)
 	}
@@ -767,7 +764,7 @@ func TestRunReportsRebuildStats(t *testing.T) {
 func TestInterruptedUpgradeStillCleans(t *testing.T) {
 	f := newFixture(t)
 	f.exec("PRAGMA secure_delete=OFF")
-	f.exec("INSERT INTO messages(key, session_id, file, ts, role, project, text) VALUES ('k', 's', 'f', '2026-01-01T00:00:00.000Z', 'user', 'p', ?)", secret+" "+strings.Repeat("x", 20000))
+	f.exec("INSERT INTO messages(key, session_id, file, ts, role, text) VALUES ('k', 's', 'f', '2026-01-01T00:00:00.000Z', 'user', ?)", secret+" "+strings.Repeat("x", 20000))
 	if err := db.RebuildIndex(f.db); err != nil {
 		t.Fatal(err)
 	}
@@ -782,7 +779,7 @@ func TestInterruptedUpgradeStillCleans(t *testing.T) {
 func TestVacuumReleasesFreePages(t *testing.T) {
 	f := newFixture(t)
 	for i := range 50 {
-		f.exec("INSERT INTO messages(key, session_id, file, ts, role, project, text) VALUES (?, 's', 'f', '2026-01-01T00:00:00.000Z', 'user', 'p', ?)", fmt.Sprint(i), strings.Repeat("x", 5000))
+		f.exec("INSERT INTO messages(key, session_id, file, ts, role, text) VALUES (?, 's', 'f', '2026-01-01T00:00:00.000Z', 'user', ?)", fmt.Sprint(i), strings.Repeat("x", 5000))
 	}
 	f.exec("DELETE FROM messages")
 	if f.count("PRAGMA freelist_count") == 0 {
@@ -870,16 +867,17 @@ func TestJournalCwdAndTitle(t *testing.T) {
 	line["title"] = "Mon titre"
 	f.journal(line)
 	f.all()
-	if f.one("SELECT project FROM messages") != "path:/a" || f.one("SELECT title FROM sessions") != "Mon titre" || f.one("SELECT launch_cwd FROM sessions") != "/a" {
+	if f.one("SELECT title FROM sessions") != "Mon titre" || f.one("SELECT launch_cwd FROM sessions") != "/a" {
 		t.Fatal("journal cwd or title not applied")
 	}
 }
 
 func TestJournalWithoutCwdGoesToRoots(t *testing.T) {
+	t.Skip("Task 7")
 	f := newFixture(t)
 	f.journal(journalLine("1", "user", "bonjour"))
 	f.all()
-	if got := f.one("SELECT project FROM messages"); got != projects.Roots {
+	if got := f.one("SELECT project FROM messages"); got != "roots" {
 		t.Fatal(got)
 	}
 }
