@@ -64,7 +64,7 @@ Ne recopie ni ne devine jamais un secret : %[4]s reste tel quel ou n'apparaît p
 
 Sujets : chaque sujet candidat fourni a un uid, un type (repo pour un dépôt git, subject pour tout le reste : un réseau domestique, une démarche, une fiche), un nom, des mots-clés et un parent.
 Le subject d'un point est l'uid du candidat dont il parle, new:<n> pour le sujet nouveau d'indice n (à partir de 0) dans new_subjects, ou vide s'il ne se rattache à aucun sujet durable. Le dépôt où travaille Claude ne dit pas à lui seul de quoi parle un point.
-new_subjects : seulement quand aucun candidat ne convient ; un nom court, des mots-clés (aliases) qui le feront retrouver, et un parent (uid d'un candidat ou new:<n>) quand il fait partie d'un sujet plus large, sinon vide.
+new_subjects : seulement quand aucun candidat ne convient ; un sujet qui porte le nom d'un candidat (dépôt ou sujet) est ce candidat : reprends son uid au lieu d'en créer un homonyme ; un nom court, des mots-clés (aliases) qui le feront retrouver, et un parent (uid d'un candidat ou new:<n>) quand il fait partie d'un sujet plus large, sinon vide.
 links : les relations que l'épisode établit entre deux sujets (uid ou new:<n>), de trois types seulement : part_of (source fait partie de target), depends_on (source dépend de target), about (source concerne target).
 aliases : les mots-clés à ajouter à un candidat (subject : son uid ; add : les mots-clés).
 closes : uniquement les numéros (sans #) des points en suspens fournis que cet épisode a réglés.

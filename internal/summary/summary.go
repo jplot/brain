@@ -616,6 +616,7 @@ type episode struct {
 	aliases        []aliasAdd
 	supersedes     []replacement
 	candidates     map[string]bool
+	repos          map[string]string
 	rejected       int
 }
 
@@ -748,9 +749,12 @@ func summarizeParts(c *calls, user, sessionID string, parts []string, data promp
 			e.rejected++
 		}
 	}
-	e.candidates = map[string]bool{}
+	e.candidates, e.repos = map[string]bool{}, map[string]string{}
 	for _, s := range data.candidates {
 		e.candidates[s.uid] = true
+		if key := subjects.Normalize(s.name); s.kind == "repo" && e.repos[key] == "" {
+			e.repos[key] = s.uid
+		}
 	}
 	readGraph(output, e)
 	supersedes, _ := output["supersedes"].([]any)
@@ -825,11 +829,20 @@ func (r *refs) graph(e episode) error {
 		uid := ""
 		if s.name != "" {
 			var err error
-			if uid, err = subjects.Create(r.q, s.name, s.aliases, nil); err != nil {
+			// Haiku created a subject beside the candidate repository of the same name; Create never matches a
+			// repository, since a person may share a tool's name, so only a repository shown to the model is reused.
+			if repo, ok := e.repos[subjects.Normalize(s.name)]; ok {
+				uid, err = r.resolve(repo)
+			} else {
+				uid, err = subjects.Create(r.q, s.name, s.aliases, nil)
+			}
+			if err != nil {
 				return err
 			}
-			if err := subjects.AddAliases(r.q, uid, s.aliases); err != nil {
-				return err
+			if uid != "" {
+				if err := subjects.AddAliases(r.q, uid, s.aliases); err != nil {
+					return err
+				}
 			}
 		}
 		r.created = append(r.created, uid)
