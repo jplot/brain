@@ -21,7 +21,6 @@ func budgetFor(s string) time.Duration {
 	return time.Second + time.Duration(len(s)/1024)*2*time.Millisecond
 }
 
-// maxDepth is the Python reference's bound, kept so both versions mask the same text.
 const maxDepth = 8
 
 var (
@@ -77,9 +76,9 @@ var (
 		`(?:`+marker+`|[^\s"'])+`, 0)
 )
 
-// Python's \w is letters, numbers and "_" (.NET adds marks and connectors, drops "²") and
-// its \s includes U+001C-U+001F, so both are spelled out.
-var pythonClasses = strings.NewReplacer(
+// \w means letters, numbers and "_", and \s includes U+001C-U+001F; regexp2 follows .NET,
+// whose \w adds marks and connectors and drops "²", so both are spelled out.
+var wordClasses = strings.NewReplacer(
 	`[^\s`, `[^\s\x1c-\x1f`,
 	`[\w`, `[\p{L}\p{N}_`,
 	`\w`, `[\p{L}\p{N}_]`,
@@ -87,10 +86,11 @@ var pythonClasses = strings.NewReplacer(
 )
 
 func mustCompile(pattern string, opts regexp2.RegexOptions) *regexp2.Regexp {
-	return regexp2.MustCompile(pythonClasses.Replace(pattern), opts)
+	return regexp2.MustCompile(wordClasses.Replace(pattern), opts)
 }
 
-// fold adds the two non-ASCII letters that Python's IGNORECASE equates with "s" and "k".
+// fold adds the two non-ASCII letters that Unicode case folding equates with "s" and "k":
+// regexp2's IgnoreCase misses "ſ", so "paſſword=" escaped the password key.
 func fold(words string) string {
 	return strings.NewReplacer("s", `[s\u017f]`, "S", `[S\u017f]`, "k", `[k\u212a]`, "K", `[K\u212a]`).Replace(words)
 }

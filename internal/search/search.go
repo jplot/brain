@@ -75,7 +75,7 @@ type Message struct {
 	GitBranch                 *string
 }
 
-// Terms splits like Python's str.split, which also breaks on the four ASCII separators \x1c-\x1f.
+// Terms also breaks on the four ASCII separators \x1c-\x1f, which mask treats as spaces too.
 func Terms(text string) []string {
 	return strings.FieldsFunc(text, func(r rune) bool { return unicode.IsSpace(r) || (r >= 0x1c && r <= 0x1f) })
 }

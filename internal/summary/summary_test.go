@@ -498,7 +498,7 @@ func TestInvalidPointDropped(t *testing.T) {
 		"importance bool":  point("importance", true),
 		"importance 3.5":   point("importance", 3.5),
 		"unknown kind":     point("kind", "other"),
-		"python kind":      point("kind", "sujet"),
+		"french kind":      point("kind", "sujet"),
 		"empty text":       point("text", ""),
 		"blank text":       point("text", "  "),
 		"only a kind":      {"kind": "fact"},
