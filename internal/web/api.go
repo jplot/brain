@@ -653,13 +653,19 @@ func rename(s *server, r *request) (any, error) {
 }
 
 // Two subjects with one name merge at the next summarize: the page asks for an explicit merge instead.
+// Repos never merge by name (forks share theirs), so they stay out of the check, on both sides.
 func renameUnique(q db.Querier, uid, name string) error {
+	renamed, err := subjects.Get(q, uid)
+	if err != nil {
+		return err
+	}
 	all, err := subjects.List(q)
 	if err != nil {
 		return err
 	}
 	for _, other := range all {
-		if other.UID != uid && subjects.Normalize(other.Name) == subjects.Normalize(name) {
+		if renamed.Kind == "subject" && other.Kind == "subject" && other.UID != uid &&
+			subjects.Normalize(other.Name) == subjects.Normalize(name) {
 			return fail(http.StatusConflict, "un autre sujet s'appelle déjà « "+other.Name+" » : pour les réunir, utilise « Fusionner »")
 		}
 	}

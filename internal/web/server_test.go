@@ -1323,6 +1323,23 @@ func TestRenameSubject(t *testing.T) {
 	f.status(t, f.post("/api/subjects/rename", obj{"uid": w.a, "name": "GAMMA rayon"}), 200)
 }
 
+func TestRenameLeavesReposOutOfTheNameCheck(t *testing.T) {
+	f := newFixture(t)
+	w := f.indexed()
+	first, err := subjects.EnsureRepo(f.conn, "example/widget", "widget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fork, err := subjects.EnsureRepo(f.conn, "fork/widget", "widget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.status(t, f.post("/api/subjects/rename", obj{"uid": w.a, "name": "WIDGET"}), 200)
+	f.status(t, f.post("/api/subjects/rename", obj{"uid": fork, "name": "widget"}), 200)
+	f.status(t, f.post("/api/subjects/rename", obj{"uid": first, "name": "Widget"}), 200)
+	f.status(t, f.post("/api/subjects/rename", obj{"uid": w.b, "name": "widget"}), 409)
+}
+
 func TestMergeSubjects(t *testing.T) {
 	f := newFixture(t)
 	w := f.memories()
