@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jplot/brain/internal/config"
 	"github.com/jplot/brain/internal/db"
@@ -291,6 +292,18 @@ func TestInvalidLineSkipped(t *testing.T) {
 	}
 	if stats.Malformed != 2 {
 		t.Fatalf("malformed %d", stats.Malformed)
+	}
+}
+
+func TestInvalidUTF8InsideStringIsRepairedNotMalformed(t *testing.T) {
+	f := newFixture(t)
+	raw, _ := json.Marshal(user("octet ZZ mauvais"))
+	path := f.transcript("-p", "s1")
+	appendRaw(t, path, strings.Replace(string(raw), "ZZ", "\xff", 1)+"\n")
+	stats := f.all()
+	got := f.texts()
+	if stats.Malformed != 0 || len(got) != 1 || !utf8.ValidString(got[0]) || !strings.Contains(got[0], "\uFFFD") {
+		t.Fatalf("stats %+v, texts %q", stats, got)
 	}
 }
 
@@ -848,4 +861,77 @@ func (f *fixture) allCapturingLog(w *strings.Builder) Stats {
 	log.SetOutput(w)
 	defer log.SetOutput(os.Stderr)
 	return f.all()
+}
+
+func TestJournalCwdAndTitle(t *testing.T) {
+	f := newFixture(t)
+	line := journalLine("1", "user", "bonjour")
+	line["cwd"] = "/a"
+	line["title"] = "Mon titre"
+	f.journal(line)
+	f.all()
+	if f.one("SELECT project FROM messages") != "path:/a" || f.one("SELECT title FROM sessions") != "Mon titre" || f.one("SELECT launch_cwd FROM sessions") != "/a" {
+		t.Fatal("journal cwd or title not applied")
+	}
+}
+
+func TestJournalWithoutCwdGoesToRoots(t *testing.T) {
+	f := newFixture(t)
+	f.journal(journalLine("1", "user", "bonjour"))
+	f.all()
+	if got := f.one("SELECT project FROM messages"); got != projects.Roots {
+		t.Fatal(got)
+	}
+}
+
+func TestForgottenSessionStaysForgottenAfterShrink(t *testing.T) {
+	f := newFixture(t)
+	path := f.journal(journalLine("1", "user", "ancien texte nettement plus long que le nouveau"))
+	f.all()
+	f.exec("INSERT INTO forgotten_sessions(session_id, at) VALUES ('vs', '2026-01-01T00:00:00.000Z')")
+	f.exec("DELETE FROM messages")
+	f.exec("DELETE FROM sessions")
+	short := journalLine("2", "user", "nv")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	appendLines(t, path, short)
+	f.all()
+	if f.messages() != 0 || f.count("SELECT count(*) FROM sessions") != 0 {
+		t.Fatal("forgotten session came back after the file shrank")
+	}
+}
+
+func TestWriteLockTakenBeforeReadingOffset(t *testing.T) {
+	f := newFixture(t)
+	f.transcript("-p", "s1", user("un"))
+	other, err := db.Open(f.p, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	var once sync.Once
+	wrote := make(chan error, 1)
+	parseClaude = func(raw []byte, is func(string) bool) ([]transcript.Item, error) {
+		once.Do(func() {
+			go func() {
+				_, err := other.Exec("INSERT INTO meta(key, value) VALUES ('k', 'v')")
+				wrote <- err
+			}()
+			select {
+			case err := <-wrote:
+				wrote <- err
+			case <-time.After(100 * time.Millisecond):
+			}
+		})
+		return transcript.ParseClaudeLine(raw, is)
+	}
+	t.Cleanup(func() { parseClaude = transcript.ParseClaudeLine })
+	stats := f.all()
+	if err := <-wrote; err != nil {
+		t.Fatal(err)
+	}
+	if stats.Failed != 0 || f.messages() != 1 {
+		t.Fatalf("stats %+v", stats)
+	}
 }

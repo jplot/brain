@@ -27,7 +27,7 @@ const busyTimeout = 30 * time.Second
 
 var ctx = context.Background()
 
-// Replaced by tests to make a line fail the way an unexpected bug would.
+// Replaced by tests to count or slow down the parse calls of a pass.
 var parseClaude = transcript.ParseClaudeLine
 
 type Stats struct{ Files, Messages, Malformed, Failed int }
@@ -208,7 +208,8 @@ func indexFile(conn *sql.DB, cfg config.Config, name string, journal bool) (Stat
 	return stats, nil
 }
 
-// A session shared with another file keeps wrong dates or title until a rebuild.
+// A session shared with another file keeps wrong dates or title until a rebuild;
+// none of the 125 transcripts probed on 2026-11-02 has one.
 func forget(tx *sql.Tx, name string) error {
 	if _, err := tx.Exec("DELETE FROM sessions WHERE id IN (SELECT session_id FROM messages WHERE file = ?)", name); err != nil {
 		return err
