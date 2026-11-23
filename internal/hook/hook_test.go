@@ -203,21 +203,6 @@ func TestHookInvalidStdinIsHarmless(t *testing.T) {
 	}
 }
 
-func TestHookInvalidConfigIsSilent(t *testing.T) {
-	f := newFixture(t)
-	if err := os.MkdirAll(f.p.Home, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(f.p.Config(), []byte("[sync\nrepository = ="), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, event := range []string{"start", "prompt", "end"} {
-		if out, _ := f.run(event, payloadJSON(t, map[string]any{"session_id": "s", "prompt": "bonjour", "source": "startup"})); out != "" {
-			t.Fatalf("%s: stdout %q", event, out)
-		}
-	}
-}
-
 func TestHookStartWritesMemoOnStartupAndClear(t *testing.T) {
 	for _, source := range []string{"startup", "clear"} {
 		f := newFixture(t)

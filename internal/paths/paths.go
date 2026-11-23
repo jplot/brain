@@ -13,12 +13,9 @@ func (p Paths) DB() string          { return filepath.Join(p.Home, "paul.db") }
 func (p Paths) Log() string         { return filepath.Join(p.Home, "paul.log") }
 func (p Paths) IndexLock() string   { return filepath.Join(p.Home, "index.lock") }
 func (p Paths) SummaryLock() string { return filepath.Join(p.Home, "summary.lock") }
-func (p Paths) InstallLock() string { return filepath.Join(p.Home, "install.lock") }
 func (p Paths) Bin() string         { return filepath.Join(p.Home, "bin") }
-func (p Paths) Config() string      { return filepath.Join(p.Home, "config.toml") }
 func (p Paths) Journals() string    { return filepath.Join(p.Home, "journals") }
 func (p Paths) Archive() string     { return filepath.Join(p.Journals(), "archive.jsonl") }
-func (p Paths) SyncDir() string     { return filepath.Join(p.Home, "sync") }
 
 func (p Paths) BinDir() string {
 	user, _ := os.UserHomeDir()

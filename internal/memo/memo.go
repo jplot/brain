@@ -107,14 +107,6 @@ func sessionLine(s search.SessionRow, withSubjects bool) string {
 	return line
 }
 
-func Start(q db.Querier, cwd, sessionID string, now time.Time) (string, error) {
-	in, err := PlanStart(q, cwd, sessionID, now)
-	if err != nil {
-		return "", err
-	}
-	return in.Text, in.Record(q, now)
-}
-
 // PlanStart only reads: nothing counts as shown until Record.
 func PlanStart(q db.Querier, cwd, sessionID string, now time.Time) (Injection, error) {
 	return start(q, cwd, sessionID, now, true)

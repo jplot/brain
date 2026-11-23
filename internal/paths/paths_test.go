@@ -29,9 +29,9 @@ func TestFileNames(t *testing.T) {
 	p := Paths{Home: "/h"}
 	for got, want := range map[string]string{
 		p.DB(): "/h/paul.db", p.Log(): "/h/paul.log", p.IndexLock(): "/h/index.lock",
-		p.SummaryLock(): "/h/summary.lock", p.InstallLock(): "/h/install.lock",
-		p.Bin(): "/h/bin", p.Config(): "/h/config.toml",
-		p.Journals(): "/h/journals", p.SyncDir(): "/h/sync",
+		p.SummaryLock(): "/h/summary.lock",
+		p.Bin():         "/h/bin",
+		p.Journals():    "/h/journals",
 	} {
 		if got != want {
 			t.Errorf("got %s, want %s", got, want)

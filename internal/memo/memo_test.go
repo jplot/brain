@@ -85,6 +85,22 @@ func (f *fixture) point(subject, kind, text string, importance int, closed bool)
 
 func runes(s string) int { return utf8.RuneCountInString(s) }
 
+func recordedStart(q db.Querier, cwd, sessionID string, now time.Time) (string, error) {
+	in, err := PlanStart(q, cwd, sessionID, now)
+	if err != nil {
+		return "", err
+	}
+	return in.Text, in.Record(q, now)
+}
+
+func recordedInject(q db.Querier, sessionID, prompt string) (string, error) {
+	in, err := Plan(q, sessionID, prompt)
+	if err != nil {
+		return "", err
+	}
+	return in.Text, in.Record(q, time.Now())
+}
+
 func TestStartInRepoShowsSubjectIndex(t *testing.T) {
 	f := newFixture(t)
 	repo, err := subjects.EnsureRepo(f.db, "example/widget", "widget")
@@ -97,7 +113,7 @@ func TestStartInRepoShowsSubjectIndex(t *testing.T) {
 	f.session("s1", "Other work", "2026-11-20T10:00:00.000Z")
 
 	for _, cwd := range []string{"/work/widget", "/work/widget/cmd/tool"} {
-		got, err := Start(f.db, cwd, "sess", now)
+		got, err := recordedStart(f.db, cwd, "sess", now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -121,7 +137,7 @@ func TestStartInRepoShowsSubjectIndex(t *testing.T) {
 
 func mustStart(t *testing.T, f *fixture, cwd string) string {
 	t.Helper()
-	got, err := Start(f.db, cwd, "sess", now)
+	got, err := recordedStart(f.db, cwd, "sess", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +149,7 @@ func TestStartWithoutSessionRecordsNothingInjected(t *testing.T) {
 	repo, _ := subjects.EnsureRepo(f.db, "example/widget", "widget")
 	f.exec("INSERT INTO repo_cache VALUES ('/work/widget', ?, 't')", repo)
 	for _, session := range []string{"", "sess"} {
-		if _, err := Start(f.db, "/work/widget", session, now); err != nil {
+		if _, err := recordedStart(f.db, "/work/widget", session, now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -254,7 +270,7 @@ func TestInjectNamedSubject(t *testing.T) {
 	uid := f.subject("Billing", "invoicing")
 	pt := f.point(uid, "decision", "invoices are rounded per line", 4, false)
 	f.subject("Shipping")
-	got, err := Inject(f.db, "sess", "Can we revisit Invoicing today?")
+	got, err := recordedInject(f.db, "sess", "Can we revisit Invoicing today?")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +292,7 @@ func TestInjectRepoByItsFolderName(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.point(uid, "decision", "les jetons expirent après une heure", 4, false)
-	got, _ := Inject(f.db, "sess", "on reprend le verger")
+	got, _ := recordedInject(f.db, "sess", "on reprend le verger")
 	if !strings.Contains(got, "Sujet « verger-api »") {
 		t.Fatalf("got %q", got)
 	}
@@ -286,7 +302,7 @@ func TestInjectTwoWordName(t *testing.T) {
 	f := newFixture(t)
 	f.subject("Pull Request Bot")
 	f.subject("Pull Requests", "pull request")
-	got, _ := Inject(f.db, "sess", "about the pull request flow")
+	got, _ := recordedInject(f.db, "sess", "about the pull request flow")
 	if !strings.Contains(got, "Sujet « Pull Requests »") {
 		t.Fatalf("got %q", got)
 	}
@@ -298,7 +314,7 @@ func TestInjectAmbiguousListsCandidatesOnly(t *testing.T) {
 	person := f.subject("Mira Dupont", "mira")
 	f.point(tool, "fact", "secret tool fact", 5, false)
 	f.point(person, "fact", "secret person fact", 5, false)
-	got, err := Inject(f.db, "sess", "ask mira about it")
+	got, err := recordedInject(f.db, "sess", "ask mira about it")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +332,7 @@ func TestInjectSpecificNameSilencesAmbiguousFirstName(t *testing.T) {
 	f := newFixture(t)
 	f.subject("Mira tool", "mira")
 	f.subject("Mira Dupont", "mira", "mira dupont")
-	got, _ := Inject(f.db, "sess", "ask mira dupont")
+	got, _ := recordedInject(f.db, "sess", "ask mira dupont")
 	if strings.Contains(got, "Plusieurs") || !strings.Contains(got, "Sujet « Mira Dupont »") {
 		t.Fatalf("got %q", got)
 	}
@@ -369,13 +385,13 @@ func TestPlanStartRecordsNothingUntilRecord(t *testing.T) {
 func TestInjectOncePerSession(t *testing.T) {
 	f := newFixture(t)
 	f.subject("Billing")
-	if got, _ := Inject(f.db, "s1", "billing"); got == "" {
+	if got, _ := recordedInject(f.db, "s1", "billing"); got == "" {
 		t.Fatal("first time empty")
 	}
-	if got, _ := Inject(f.db, "s1", "billing again"); got != "" {
+	if got, _ := recordedInject(f.db, "s1", "billing again"); got != "" {
 		t.Fatalf("second time %q", got)
 	}
-	if got, _ := Inject(f.db, "s2", "billing"); got == "" {
+	if got, _ := recordedInject(f.db, "s2", "billing"); got == "" {
 		t.Fatal("other session empty")
 	}
 }
@@ -385,11 +401,11 @@ func TestInjectAtMostThree(t *testing.T) {
 	for _, n := range []string{"alpha", "bravo", "charlie", "delta", "echo"} {
 		f.subject(n)
 	}
-	got, _ := Inject(f.db, "s1", "alpha bravo charlie delta echo")
+	got, _ := recordedInject(f.db, "s1", "alpha bravo charlie delta echo")
 	if n := strings.Count(got, "Sujet «"); n != 3 {
 		t.Fatalf("%d indexes\n%s", n, got)
 	}
-	again, _ := Inject(f.db, "s1", "alpha bravo charlie delta echo")
+	again, _ := recordedInject(f.db, "s1", "alpha bravo charlie delta echo")
 	if n := strings.Count(again, "Sujet «"); n != 2 || strings.Contains(again, "alpha") && strings.Contains(got, "alpha") {
 		t.Fatalf("%d indexes\n%s", n, again)
 	}
@@ -399,7 +415,7 @@ func TestInjectNothingWhenNoMatch(t *testing.T) {
 	f := newFixture(t)
 	f.subject("Billing")
 	for _, prompt := range []string{"hello there", "", "go on", "a b"} {
-		if got, err := Inject(f.db, "s1", prompt); err != nil || got != "" {
+		if got, err := recordedInject(f.db, "s1", prompt); err != nil || got != "" {
 			t.Fatalf("%q: %q, %v", prompt, got, err)
 		}
 	}
@@ -436,7 +452,7 @@ func TestInjectFast(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	got, err := Inject(f.db, "s1", "On reprend le fait numero 7 de sujet1500 ce matin")
+	got, err := recordedInject(f.db, "s1", "On reprend le fait numero 7 de sujet1500 ce matin")
 	elapsed := time.Since(start)
 	if err != nil || !strings.Contains(got, "Sujet « sujet1500 »") {
 		t.Fatalf("%v\n%s", err, got)
@@ -476,7 +492,7 @@ func TestStartRecordsRepoSubjectAsInjected(t *testing.T) {
 	repo, _ := subjects.EnsureRepo(f.db, "example/widget", "widget")
 	f.exec("INSERT INTO repo_cache VALUES ('/work/widget', ?, 't')", repo)
 	mustStart(t, f, "/work/widget")
-	if got, _ := Inject(f.db, "sess", "tell me about widget"); got != "" {
+	if got, _ := recordedInject(f.db, "sess", "tell me about widget"); got != "" {
 		t.Fatalf("index repeated: %q", got)
 	}
 }
@@ -485,7 +501,7 @@ func TestStartShowsFirstOfMonthAsOrdinal(t *testing.T) {
 	f := newFixture(t)
 	f.subject("Alpha")
 	f.session("s1", "Title", "2026-11-20T10:00:00.000Z")
-	got, err := Start(f.db, "/nowhere", "sess", time.Date(2026, 12, 1, 12, 0, 0, 0, time.Local))
+	got, err := recordedStart(f.db, "/nowhere", "sess", time.Date(2026, 12, 1, 12, 0, 0, 0, time.Local))
 	if err != nil || !strings.Contains(got, "Aujourd'hui : mardi 1er décembre 2026.") {
 		t.Fatalf("%v\n%s", err, got)
 	}
@@ -494,7 +510,7 @@ func TestStartShowsFirstOfMonthAsOrdinal(t *testing.T) {
 func TestInjectLongSubjectName(t *testing.T) {
 	f := newFixture(t)
 	f.subject("Migration du service de facturation mensuelle")
-	got, _ := Inject(f.db, "sess", "où en est la migration du service de facturation mensuelle ce mois ?")
+	got, _ := recordedInject(f.db, "sess", "où en est la migration du service de facturation mensuelle ce mois ?")
 	if !strings.Contains(got, "Sujet « Migration du service de facturation mensuelle »") {
 		t.Fatalf("got %q", got)
 	}
@@ -504,14 +520,14 @@ func TestInjectAmbiguityOncePerSession(t *testing.T) {
 	f := newFixture(t)
 	f.subject("Mira tool", "mira")
 	f.subject("Mira Dupont", "mira")
-	first, _ := Inject(f.db, "s1", "ask mira")
+	first, _ := recordedInject(f.db, "s1", "ask mira")
 	if !strings.Contains(first, "Plusieurs sujets") {
 		t.Fatalf("first %q", first)
 	}
-	if again, _ := Inject(f.db, "s1", "and mira again"); again != "" {
+	if again, _ := recordedInject(f.db, "s1", "and mira again"); again != "" {
 		t.Fatalf("again %q", again)
 	}
-	if other, _ := Inject(f.db, "s2", "ask mira"); !strings.Contains(other, "Plusieurs sujets") {
+	if other, _ := recordedInject(f.db, "s2", "ask mira"); !strings.Contains(other, "Plusieurs sujets") {
 		t.Fatalf("other session %q", other)
 	}
 }

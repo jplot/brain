@@ -52,14 +52,6 @@ type Injection struct {
 	used      []string
 }
 
-func Inject(q db.Querier, sessionID, prompt string) (string, error) {
-	in, err := Plan(q, sessionID, prompt)
-	if err != nil {
-		return "", err
-	}
-	return in.Text, in.Record(q, time.Now())
-}
-
 // Record marks the injected subjects and the shown points; the caller does it only after delivering Text.
 func (in Injection) Record(q db.Querier, now time.Time) error {
 	for _, key := range in.keys {
