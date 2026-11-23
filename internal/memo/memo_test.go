@@ -127,6 +127,24 @@ func mustStart(t *testing.T, f *fixture, cwd string) string {
 	return got
 }
 
+func TestStartWithoutSessionRecordsNothingInjected(t *testing.T) {
+	f := newFixture(t)
+	repo, _ := subjects.EnsureRepo(f.db, "example/widget", "widget")
+	f.exec("INSERT INTO repo_cache VALUES ('/work/widget', ?, 't')", repo)
+	for _, session := range []string{"", "sess"} {
+		if _, err := Start(f.db, "/work/widget", session, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var n int
+	if err := f.db.QueryRow("SELECT count(*) FROM injected WHERE session_id = ''").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("%d lignes pour la session vide (%v)", n, err)
+	}
+	if err := f.db.QueryRow("SELECT count(*) FROM injected WHERE session_id = 'sess'").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("%d lignes pour sess (%v)", n, err)
+	}
+}
+
 func TestStartOutsideRepoShowsLastSessions(t *testing.T) {
 	f := newFixture(t)
 	a := f.subject("Alpha")

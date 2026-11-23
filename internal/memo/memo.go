@@ -121,8 +121,10 @@ func Start(q db.Querier, cwd, sessionID string, now time.Time) (string, error) {
 		if err := memory.MarkUsed(q, used, now); err != nil {
 			return "", err
 		}
-		if _, err := q.ExecContext(background, "INSERT OR IGNORE INTO injected(session_id, subject_uid) VALUES (?, ?)", sessionID, uid); err != nil {
-			return "", err
+		if sessionID != "" {
+			if _, err := q.ExecContext(background, "INSERT OR IGNORE INTO injected(session_id, subject_uid) VALUES (?, ?)", sessionID, uid); err != nil {
+				return "", err
+			}
 		}
 		body = []string{text}
 	} else {

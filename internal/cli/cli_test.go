@@ -540,6 +540,8 @@ func TestNotYetAvailableCommands(t *testing.T) {
 func TestNoCommandPrintsUsage(t *testing.T) {
 	f := newFixture(t)
 	contains(t, f.fails(2), "Usage : paul <commande>")
+	saved := Version
+	t.Cleanup(func() { Version = saved })
 	Version = "1.2.3"
 	if out := f.ok("--version"); out != "paul 1.2.3\n" {
 		t.Fatalf("got %q", out)
@@ -556,7 +558,7 @@ func TestLogNeverOnStderr(t *testing.T) {
 	var stray bytes.Buffer
 	stdLogTo(&stray, t)
 	code, out, errOut := f.run("index")
-	if code != 1 || strings.Contains(out+errOut, "indexation échouée") || stray.Len() != 0 {
+	if code != 1 || strings.Contains(out+errOut, "indexation échouée") || stray.Len() != 0 || errOut != "" && !strings.HasPrefix(errOut, "paul : échec de index : voir paul.log") {
 		t.Fatalf("journal hors de paul.log : code %d\n%s%s\n%s", code, out, errOut, stray.String())
 	}
 	raw, err := os.ReadFile(f.p.Log())
@@ -579,3 +581,68 @@ func stdLogTo(w io.Writer, t *testing.T) {
 }
 
 func stdLogWriter() io.Writer { return log.Writer() }
+
+func TestHelpPrintsUsageAndExitsWithZero(t *testing.T) {
+	f := newFixture(t)
+	for _, args := range [][]string{{"-h"}, {"--help"}, {"search", "--help"}, {"souvenirs", "-h"}, {"forget", "--help"}} {
+		contains(t, f.ok(args...), "Usage : paul <commande>")
+	}
+}
+
+func TestFailureLineNamesNoGoType(t *testing.T) {
+	f := newFixture(t)
+	if err := f.p.EnsureHome(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(f.p.DB(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, _, errOut := f.run("souvenirs")
+	if errOut != "paul : échec de souvenirs : voir paul.log\n" {
+		t.Fatalf("got %q", errOut)
+	}
+}
+
+func TestDoubleDashEndsTheOptions(t *testing.T) {
+	f := newFixture(t)
+	f.say(s1, "une pomme since x")
+	contains(t, f.ok("search", "--", "--since", "pomme"), "«pomme»")
+	contains(t, f.ok("search", "--", "pomme", "--since", "x"), "«pomme»")
+	contains(t, f.fails(2, "search", "pomme", "--since"), "valeur manquante")
+}
+
+func TestMemoNamedSubjectWithNothingToShow(t *testing.T) {
+	f := newFixture(t)
+	f.subject("Vide")
+	lacks(t, f.ok("memo", "--subject", "vide"), "dossier")
+}
+
+func TestForgetSessionDescriptionCountsWhatGoes(t *testing.T) {
+	f := newFixture(t)
+	f.transcript(s1, message(s1, "2026-10-26T23:45:57Z", "une pomme"), message(s1, "2026-10-26T23:46:57Z", "une poire"))
+	f.ok("index")
+	ep := f.episode(s1, "t", "r")
+	f.point(ep, "", "fact", "A")
+	f.point(ep, "", "fact", "B")
+	contains(t, f.fails(2, "forget", "session", "aaaa"), "(2 messages, 1 épisodes, 2 points)")
+}
+
+func TestAmbiguousSubjectListsCandidates(t *testing.T) {
+	f := newFixture(t)
+	a := f.subject("Alpha", "jumeau")
+	b := f.subject("Beta", "jumeau")
+	out := f.fails(2, "souvenirs", "--subject", "jumeau")
+	contains(t, out, "plusieurs sujets portent ce nom : jumeau", "Alpha "+a, "Beta "+b)
+	f.fails(2, "memo", "--subject", "jumeau")
+}
+
+func TestBareUnknownAndHelpDoNotCreateTheHome(t *testing.T) {
+	f := newFixture(t)
+	f.fails(2)
+	f.fails(2, "nimporte")
+	f.ok("--help")
+	f.ok("--version")
+	if _, err := os.Stat(f.p.Home); !os.IsNotExist(err) {
+		t.Fatalf("PAUL_HOME créé : %v", err)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -77,14 +78,16 @@ func commands() map[string]command {
 // Main runs one command and returns the exit code: 2 for a usage error, 1 for a failure.
 // The standard logger goes to paul.log for the whole run, never to a terminal.
 func Main(args []string, stdout, stderr io.Writer) int {
-	p := paths.Default()
-	defer redirectLog(p)()
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
 		return 2
 	}
-	if args[0] == "--version" {
+	switch args[0] {
+	case "--version":
 		fmt.Fprintf(stdout, "paul %s\n", Version)
+		return 0
+	case "-h", "--help":
+		fmt.Fprint(stdout, usage)
 		return 0
 	}
 	run, known := commands()[args[0]]
@@ -92,7 +95,13 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "paul : commande inconnue : %s\n\n%s", args[0], usage)
 		return 2
 	}
+	p := paths.Default()
+	defer redirectLog(p)()
 	code, err := run(&env{p: p, out: stdout, err: stderr}, args[1:])
+	if errors.Is(err, flag.ErrHelp) {
+		fmt.Fprint(stdout, usage)
+		return 0
+	}
 	if err == nil {
 		return code
 	}
@@ -106,7 +115,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	log.Printf("%s : %v", args[0], err)
-	fmt.Fprintf(stderr, "paul : échec de %s (%T), voir paul.log\n", args[0], err)
+	fmt.Fprintf(stderr, "paul : échec de %s : voir paul.log\n", args[0])
 	return 1
 }
 
@@ -128,13 +137,20 @@ func redirectLog(p paths.Paths) (restore func()) {
 
 func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 	fs.SetOutput(io.Discard)
+	var after []string
+	if i := slices.Index(args, "--"); i >= 0 {
+		args, after = args[:i], args[i+1:]
+	}
 	var positional []string
 	for {
 		if err := fs.Parse(args); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil, err
+			}
 			return nil, usagef("%s : %s", fs.Name(), french(err))
 		}
 		if fs.NArg() == 0 {
-			return positional, nil
+			return append(positional, after...), nil
 		}
 		positional = append(positional, fs.Arg(0))
 		args = fs.Args()[1:]

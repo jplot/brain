@@ -348,8 +348,9 @@ func memoCmd(e *env, args []string) (int, error) {
 		return 0, err
 	}
 	defer conn.Close()
-	var text string
+	var text, none string
 	if *subject != "" {
+		none = "Aucun souvenir pour ce sujet."
 		s, err := resolveSubject(conn, *subject)
 		if err != nil {
 			return 0, err
@@ -359,6 +360,7 @@ func memoCmd(e *env, args []string) (int, error) {
 			return 0, err
 		}
 	} else {
+		none = "Aucun souvenir pour ce dossier."
 		cwd, err := os.Getwd()
 		if err == nil {
 			_, err = os.Stat(cwd)
@@ -371,7 +373,7 @@ func memoCmd(e *env, args []string) (int, error) {
 		}
 	}
 	if text == "" {
-		text = "Aucun souvenir pour ce dossier."
+		text = none
 	}
 	fmt.Fprintln(e.out, text)
 	return 0, nil
@@ -496,7 +498,12 @@ func forget(e *env, args []string) (int, error) {
 		if row.Title != nil && *row.Title != "" {
 			title = flat(*row.Title)
 		}
-		description = fmt.Sprintf("la session %s  %s", short(row.ID), title)
+		var messages, episodes, points int
+		if err := conn.QueryRow("SELECT (SELECT count(*) FROM messages WHERE session_id = ?1), (SELECT count(*) FROM episodes WHERE session_id = ?1),"+
+			" (SELECT count(*) FROM points WHERE episode_id IN (SELECT id FROM episodes WHERE session_id = ?1))", row.ID).Scan(&messages, &episodes, &points); err != nil {
+			return 0, err
+		}
+		description = fmt.Sprintf("la session %s  %s (%d messages, %d épisodes, %d points)", short(row.ID), title, messages, episodes, points)
 		note = "\nLe fichier de transcript reste sur le disque : l'oubli ne fait que le retirer de la mémoire."
 		erase = func() error {
 			release, _, err := lock.Writer(e.p.IndexLock(), true)
