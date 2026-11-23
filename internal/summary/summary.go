@@ -988,12 +988,6 @@ func store(conn *sql.DB, sessionID string, e episode, created string) (written b
 	return written, err
 }
 
-type staleEpisode struct {
-	id      int64
-	title   sql.NullString
-	summary string
-}
-
 func remaining(q db.Querier, episode int64) (ids []int64, texts []string, err error) {
 	rows, err := q.QueryContext(ctx, "SELECT id, text FROM points WHERE episode_id = ? ORDER BY id", episode)
 	if err != nil {
@@ -1011,24 +1005,25 @@ func remaining(q db.Querier, episode int64) (ids []int64, texts []string, err er
 	return ids, texts, rows.Err()
 }
 
-func staleEpisodes(conn *sql.DB) ([]staleEpisode, error) {
-	rows, err := conn.Query("SELECT id, title, summary FROM episodes WHERE summary_stale = 1 AND summary IS NOT NULL")
+func staleEpisodes(conn *sql.DB) ([]int64, error) {
+	rows, err := conn.Query("SELECT id FROM episodes WHERE summary_stale = 1 AND summary IS NOT NULL")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []staleEpisode
+	var out []int64
 	for rows.Next() {
-		var e staleEpisode
-		if err := rows.Scan(&e.id, &e.title, &e.summary); err != nil {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		out = append(out, e)
+		out = append(out, id)
 	}
 	return out, rows.Err()
 }
 
-// RefreshStale clears a stale summary before the call: a failure leaves none rather than one quoting a forgotten point.
+// RefreshStale clears a stale summary before the call, and sends only the remaining points: the old title and
+// summary may quote a forgotten one.
 func RefreshStale(conn *sql.DB, run Runner) (int, float64) {
 	c := &calls{run: run}
 	stale, err := staleEpisodes(conn)
@@ -1037,8 +1032,8 @@ func RefreshStale(conn *sql.DB, run Runner) (int, float64) {
 		return 0, 0
 	}
 	refreshed := 0
-	for _, e := range stale {
-		done, err := refresh(conn, c, e)
+	for _, episode := range stale {
+		done, err := refresh(conn, c, episode)
 		if err != nil {
 			log.Printf("résumé périmé non refait : %T", err)
 		}
@@ -1049,17 +1044,16 @@ func RefreshStale(conn *sql.DB, run Runner) (int, float64) {
 	return refreshed, c.cost
 }
 
-func refresh(conn *sql.DB, c *calls, e staleEpisode) (done bool, err error) {
+func refresh(conn *sql.DB, c *calls, episode int64) (done bool, err error) {
 	if _, err := conn.Exec("UPDATE episodes SET title = NULL, summary = NULL, summary_stale = 0, updated_at = ?"+
-		" WHERE id = ?", db.Stamp(time.Time{}), e.id); err != nil {
+		" WHERE id = ?", db.Stamp(time.Time{}), episode); err != nil {
 		return false, err
 	}
-	ids, texts, err := remaining(conn, e.id)
+	ids, texts, err := remaining(conn, episode)
 	if err != nil || len(ids) == 0 {
 		return false, err
 	}
-	body := fmt.Sprintf("Titre actuel : %s\nRésumé actuel : %s\nPoints restants :\n- %s", e.title.String, e.summary,
-		strings.Join(texts, "\n- "))
+	body := "Points de l'épisode :\n- " + strings.Join(texts, "\n- ")
 	output, err := c.call(wrap(body), refreshSystem, refreshSchema)
 	if err != nil {
 		return false, err
@@ -1068,13 +1062,13 @@ func refresh(conn *sql.DB, c *calls, e staleEpisode) (done bool, err error) {
 		return false, &Error{msg: "sortie du modèle invalide"}
 	}
 	err = immediate(conn, func(tx *sql.Conn) error {
-		current, _, err := remaining(tx, e.id)
+		current, _, err := remaining(tx, episode)
 		if err != nil || !slices.Equal(current, ids) {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, "UPDATE episodes SET title = ?, summary = ?, summary_stale = 0, updated_at = ?"+
 			" WHERE id = ?", mask.Text(output["title"].(string)), mask.Text(output["summary"].(string)),
-			db.Stamp(time.Time{}), e.id)
+			db.Stamp(time.Time{}), episode)
 		done = err == nil
 		return err
 	})

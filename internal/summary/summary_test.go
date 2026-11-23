@@ -852,7 +852,7 @@ func TestForgottenNeverSummarized(t *testing.T) {
 
 func TestStaleSummaryRedoneWithoutPoint(t *testing.T) {
 	f := newFixture(t)
-	episode := f.oldEpisode("Résumé avec Lyon et Paris")
+	episode := f.oldEpisode("Résumé : Camille vit à Lyon et aime Paris")
 	gone := f.addPoint(episode, "fact", "Camille vit à Lyon", 3, 0)
 	f.addPoint(episode, "fact", "Camille aime Paris", 3, 0)
 	if err := memory.ForgetPoint(f.db, gone); err != nil {
@@ -863,8 +863,7 @@ func TestStaleSummaryRedoneWithoutPoint(t *testing.T) {
 		t.Fatal(n, cost)
 	}
 	c := m.calls[0]
-	if !strings.Contains(c.prompt, "Camille aime Paris") || !strings.Contains(c.prompt, "Résumé avec Lyon et Paris") ||
-		strings.Contains(c.prompt, "Camille vit à Lyon") {
+	if !strings.Contains(c.prompt, "Camille aime Paris") || strings.Contains(c.prompt, "Camille vit à Lyon") {
 		t.Fatal(c.prompt)
 	}
 	if c.system != refreshSystem || !slices.Equal(c.schema.(map[string]any)["required"].([]string), []string{"title", "summary"}) {
