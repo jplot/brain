@@ -432,7 +432,7 @@ func journalLine(extra obj, drop ...string) []byte {
 }
 
 func TestJournalV1(t *testing.T) {
-	for _, role := range []string{"user", "claude", "subagent"} {
+	for _, role := range []string{"user", "claude", "subagent", "tool"} {
 		items, err := ParseJournalLine(journalLine(obj{"role": role}), "voice.jsonl")
 		if err != nil || len(items) != 1 {
 			t.Fatalf("%s: %v %v", role, items, err)
@@ -469,7 +469,7 @@ func TestJournalMasksAndNormalizes(t *testing.T) {
 }
 
 func TestJournalRejectsUnknownRole(t *testing.T) {
-	for _, role := range []string{"jonathan", "tool", ""} {
+	for _, role := range []string{"jonathan", "outil", ""} {
 		if _, err := ParseJournalLine(journalLine(obj{"role": role}), "j"); err == nil {
 			t.Errorf("role %q accepted", role)
 		}

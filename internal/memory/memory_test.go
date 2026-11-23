@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jplot/brain/internal/db"
+	"github.com/jplot/brain/internal/index"
 	"github.com/jplot/brain/internal/paths"
 	"github.com/jplot/brain/internal/subjects"
 )
@@ -355,7 +356,7 @@ func TestForgetSessionSurvivesRebuild(t *testing.T) {
 	f := newFixture(t)
 	f.message("s", "bonjour")
 	f.exec("INSERT INTO sessions(id) VALUES ('s')")
-	if err := ForgetSession(f.db, "s"); err != nil {
+	if err := ForgetSession(f.db, f.p, "s"); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.RebuildIndex(f.db); err != nil {
@@ -374,7 +375,7 @@ func TestForgetSessionAbsentFromFile(t *testing.T) {
 	e := f.episode("s9", t0, "titre "+marker, "resume "+marker)
 	f.point(e, pt{text: "point " + marker})
 	f.exec("INSERT INTO summary_failures(session_id, attempts, last_at) VALUES ('s9', 1, 't')")
-	if err := ForgetSession(f.db, "s9"); err != nil {
+	if err := ForgetSession(f.db, f.p, "s9"); err != nil {
 		t.Fatal(err)
 	}
 	for _, table := range []string{"messages", "sessions", "episodes", "points", "summary_failures"} {
@@ -388,10 +389,52 @@ func TestForgetSessionAbsentFromFile(t *testing.T) {
 	f.assertAbsentFromFiles(marker)
 }
 
+func TestForgetSessionRewritesTheArchive(t *testing.T) {
+	f := newFixture(t)
+	marker := "zephyrarchive"
+	line := func(id, session, text string) string {
+		return `{"v":1,"id":"` + id + `","session":"` + session + `","ts":"2026-01-01T10:00:00Z","role":"user","text":"` + text + `"}` + "\n"
+	}
+	os.MkdirAll(f.p.Journals(), 0o700)
+	os.WriteFile(f.p.Archive(), []byte(line("a1", "s-garde", "gardé")+line("a2", "s-oubli", "message "+marker)+line("a3", "s-garde", "encore")), 0o600)
+	vocal := filepath.Join(f.p.Journals(), "vocal.jsonl")
+	os.WriteFile(vocal, []byte(line("v1", "s-oubli", "dit à voix haute")), 0o600)
+	index.All(f.db, f.p)
+	if n := f.count("SELECT count(*) FROM messages WHERE session_id = 's-oubli'"); n != 2 {
+		t.Fatalf("%d messages before", n)
+	}
+	if err := ForgetSession(f.db, f.p, "s-oubli"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(f.p.Archive()); string(b) != line("a1", "s-garde", "gardé")+line("a3", "s-garde", "encore") {
+		t.Fatalf("archive %q", b)
+	}
+	if fi, _ := os.Stat(f.p.Archive()); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v", fi.Mode().Perm())
+	}
+	if b, _ := os.ReadFile(vocal); string(b) != line("v1", "s-oubli", "dit à voix haute") {
+		t.Fatal("vocal.jsonl touched")
+	}
+	if entries, _ := os.ReadDir(f.p.Journals()); len(entries) != 2 {
+		t.Fatalf("%d entries in journals", len(entries))
+	}
+	if n := f.count("SELECT count(*) FROM files WHERE path = ?", f.p.Archive()); n != 0 {
+		t.Fatal("archive offset kept")
+	}
+	index.All(f.db, f.p)
+	if n := f.count("SELECT count(*) FROM messages WHERE session_id = 's-oubli'"); n != 0 {
+		t.Fatalf("%d forgotten messages back", n)
+	}
+	if n := f.count("SELECT count(*) FROM messages WHERE session_id = 's-garde'"); n != 2 {
+		t.Fatalf("%d kept messages", n)
+	}
+	f.assertAbsentFromFiles(marker)
+}
+
 func TestForgetUnknownSessionLaysTombstone(t *testing.T) {
 	f := newFixture(t)
 	for range 2 {
-		if err := ForgetSession(f.db, "never-seen"); err != nil {
+		if err := ForgetSession(f.db, f.p, "never-seen"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -457,7 +500,7 @@ func TestForgetSessionRefusesOpenTransaction(t *testing.T) {
 	if _, err := tx.Exec("INSERT INTO meta(key, value) VALUES ('k', 'v')"); err != nil {
 		t.Fatal(err)
 	}
-	if err := ForgetSession(tx, "s1"); !errors.Is(err, ErrInTransaction) {
+	if err := ForgetSession(tx, f.p, "s1"); !errors.Is(err, ErrInTransaction) {
 		t.Fatalf("%v", err)
 	}
 	var n int
@@ -488,7 +531,7 @@ func TestForgetSessionReachesFileWithAnotherConnectionOpen(t *testing.T) {
 	e := f.episode("s9", t0, "titre "+marker, "resume "+marker)
 	f.point(e, pt{text: "point " + marker})
 	f2(t, f.p)
-	if err := ForgetSession(f.db, "s9"); err != nil {
+	if err := ForgetSession(f.db, f.p, "s9"); err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(f.rawBytes(), []byte(marker)) {
@@ -536,7 +579,7 @@ func TestForgetSessionPurgesRepoHints(t *testing.T) {
 	f.exec("INSERT INTO pending_paths VALUES ('s', '/d', 0, 't'), ('o', '/d', 0, 't')")
 	f.exec("INSERT INTO session_repos VALUES ('s', 'u1'), ('o', 'u1')")
 	f.exec("INSERT INTO injected VALUES ('s', 'u1'), ('o', 'u1')")
-	if err := ForgetSession(f.db, "s"); err != nil {
+	if err := ForgetSession(f.db, f.p, "s"); err != nil {
 		t.Fatal(err)
 	}
 	for _, table := range []string{"pending_paths", "session_repos", "injected"} {
@@ -696,7 +739,7 @@ func TestForgetDropsUsage(t *testing.T) {
 	if n := f.count("SELECT count(*) FROM point_usage"); n != 1 {
 		t.Fatalf("after forgetting a point: %d", n)
 	}
-	if err := ForgetSession(f.db, "s1"); err != nil {
+	if err := ForgetSession(f.db, f.p, "s1"); err != nil {
 		t.Fatal(err)
 	}
 	if n := f.count("SELECT count(*) FROM point_usage"); n != 0 {

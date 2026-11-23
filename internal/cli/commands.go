@@ -514,7 +514,7 @@ func forget(e *env, args []string) (int, error) {
 				return err
 			}
 			defer release()
-			return memory.ForgetSession(conn, row.ID)
+			return memory.ForgetSession(conn, e.p, row.ID)
 		}
 	}
 	if !*yes {

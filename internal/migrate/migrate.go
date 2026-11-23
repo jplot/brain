@@ -30,8 +30,8 @@ var (
 )
 
 type counts struct {
-	sessions, episodes, points, subjects, archived, tools int
-	rootSeen                                              bool
+	sessions, episodes, points, subjects, archived int
+	rootSeen                                       bool
 }
 
 // Run builds the new base in a staging folder and links it in place at the end,
@@ -68,14 +68,16 @@ func Run(old, root string, p paths.Paths, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	real := resolver{}
 	kept := map[string]bool{}
 	for _, name := range transcripts {
-		kept[name] = true
+		kept[real.path(name)] = true
 	}
 	if _, err := os.Stat(vocalPath); err == nil {
-		kept[vocalPath] = true
+		kept[real.path(vocalPath)] = true
 	}
-	c, err := importBase(copied, filepath.Clean(root), staged, kept)
+	read := func(file string) bool { return kept[real.path(file)] }
+	c, err := importBase(copied, filepath.Clean(root), staged, read)
 	if err != nil {
 		return err
 	}
@@ -84,7 +86,7 @@ func Run(old, root string, p paths.Paths, out io.Writer) error {
 		journals = append(journals, "vocal.jsonl")
 	}
 	if c.archived > 0 {
-		journals = append(journals, "archive.jsonl")
+		journals = append(journals, filepath.Base(p.Archive()))
 	}
 	if err := commit(staged, p, journals); err != nil {
 		return err
@@ -99,9 +101,6 @@ func Run(old, root string, p paths.Paths, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "Sessions résumées : %d\nÉpisodes : %d\nPoints : %d\nSujets créés : %d\nLignes vocales converties : %d\nMessages archivés : %d\n",
 		c.sessions, c.episodes, c.points, c.subjects, vocal, c.archived)
-	if c.tools > 0 {
-		fmt.Fprintf(out, "Lignes d'outil non archivées : %d (absentes du format v1)\n", c.tools)
-	}
 	fmt.Fprintf(out, "Index reconstruit : %d fichiers, %d messages\n", stats.Files, stats.Messages)
 	return nil
 }
@@ -140,6 +139,23 @@ func commit(staged, p paths.Paths, journals []string) error {
 	return nil
 }
 
+// The old index may name a transcript through a symlinked folder that PAUL_TRANSCRIPTS
+// reaches by its real path, or the reverse: both are compared once resolved.
+type resolver map[string]string
+
+func (r resolver) path(name string) string {
+	dir := filepath.Dir(name)
+	real, ok := r[dir]
+	if !ok {
+		real = dir
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			real = resolved
+		}
+		r[dir] = real
+	}
+	return filepath.Join(real, filepath.Base(name))
+}
+
 // Even read-only, SQLite leaves -wal and -shm files beside the base it opens: it reads a copy.
 func copyOld(old, dir string) (string, error) {
 	copied := filepath.Join(dir, "brain.db")
@@ -168,7 +184,7 @@ func copyFile(from, to string) error {
 	return errors.Join(err, out.Close())
 }
 
-func importBase(old, root string, staged paths.Paths, kept map[string]bool) (counts, error) {
+func importBase(old, root string, staged paths.Paths, read func(file string) bool) (counts, error) {
 	var c counts
 	src, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: old, RawQuery: "mode=ro"}).String())
 	if err != nil {
@@ -193,7 +209,7 @@ func importBase(old, root string, staged paths.Paths, kept map[string]bool) (cou
 	defer to.Rollback()
 	m := &mapper{to: to, root: root, uids: map[string]*string{}, c: &c}
 	steps := []func(*sql.Tx) error{m.projects, m.episodes, m.points, func(from *sql.Tx) (err error) {
-		c.archived, c.tools, err = archive(from, kept, staged.Journals())
+		c.archived, err = archive(from, read, staged.Archive())
 		return err
 	}}
 	for _, t := range carried {

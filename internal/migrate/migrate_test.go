@@ -439,18 +439,17 @@ func TestMigrateArchivesMessagesOfDeletedTranscripts(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := f.migrate()
-	for _, want := range []string{"Messages archivés : 2", "Lignes d'outil non archivées : 1"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q in:\n%s", want, out)
-		}
+	if !strings.Contains(out, "Messages archivés : 3") {
+		t.Errorf("missing count in:\n%s", out)
 	}
 	archive := filepath.Join(f.p.Journals(), "archive.jsonl")
 	got := readJournal(t, archive)
 	want := []line{
 		{1, "u9:0", "s-archive", "2026-10-01T10:00:00.000Z", "user", "la pergola en bois", "Pergola", &f.atelier},
+		{1, "u9:1", "s-archive", "2026-10-01T10:00:01.000Z", "tool", "Bash liste", "", nil},
 		{1, "report:s-archive:abc", "s-archive", "2026-10-01T10:00:02.000Z", "subagent", "rapport de jardinage", "", nil},
 	}
-	if len(got) != 2 || got[0].Cwd == nil || *got[0].Cwd != f.atelier {
+	if len(got) != 3 || got[0].Cwd == nil || *got[0].Cwd != f.atelier {
 		t.Fatalf("got %+v", got)
 	}
 	got[0].Cwd = want[0].Cwd
@@ -468,6 +467,28 @@ func TestMigrateArchivesMessagesOfDeletedTranscripts(t *testing.T) {
 	equal(t, column(t, conn, "SELECT title FROM sessions WHERE id = 's-archive'"), []string{"Pergola"})
 	equal(t, column(t, conn, "SELECT s.name FROM session_repos r JOIN subjects s ON s.uid = r.subject_uid WHERE r.session_id = 's-archive'"), []string{"atelier"})
 	equal(t, column(t, conn, "SELECT count(*) FROM messages WHERE session_id = 's-un'"), []string{"1"})
+	equal(t, column(t, conn, "SELECT role FROM messages WHERE session_id = 's-archive' ORDER BY ts"), []string{"user", "tool", "subagent"})
+}
+
+func TestMigrateSymlinkedTranscriptsAreNotArchived(t *testing.T) {
+	f := newFixture(t)
+	real := f.p.Transcripts
+	f.build(append(f.sample(), f.archived()...)...).Close()
+	transcript := filepath.Join(real, "x", "s-un.jsonl")
+	os.MkdirAll(filepath.Dir(transcript), 0o700)
+	entry := `{"type":"user","uuid":"u1","sessionId":"s-un","timestamp":"2026-11-02T10:00:00Z","origin":{"kind":"human"},"message":{"role":"user","content":"bonjour"}}` + "\n"
+	if err := os.WriteFile(transcript, []byte(entry), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f.p.Transcripts = filepath.Join(f.dir, "lien")
+	if err := os.Symlink(real, f.p.Transcripts); err != nil {
+		t.Fatal(err)
+	}
+	out := f.migrate()
+	if !strings.Contains(out, "Messages archivés : 3") {
+		t.Fatal(out)
+	}
+	equal(t, column(t, f.open(), "SELECT count(*) FROM messages WHERE text = 'bonjour'"), []string{"1"})
 }
 
 type line struct {

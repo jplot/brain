@@ -26,7 +26,7 @@ func ParseJournalLine(raw []byte, file string) ([]Item, error) {
 		return nil, fmt.Errorf("journal line: invalid ts %q", ts)
 	}
 	switch role {
-	case RoleUser, RoleClaude, RoleSubagent:
+	case RoleUser, RoleClaude, RoleSubagent, RoleTool:
 	default:
 		return nil, fmt.Errorf("journal line: unknown role %q", role)
 	}
