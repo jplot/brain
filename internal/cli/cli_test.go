@@ -539,7 +539,7 @@ func TestOldCommandsAreUnknown(t *testing.T) {
 
 func TestNotYetAvailableCommands(t *testing.T) {
 	f := newFixture(t)
-	for _, name := range []string{"sync", "hook", "migrate"} {
+	for _, name := range []string{"sync", "migrate"} {
 		contains(t, f.fails(2, name), "pas encore disponible")
 	}
 }
@@ -688,5 +688,31 @@ func TestBareUnknownAndHelpDoNotCreateTheHome(t *testing.T) {
 	f.ok("--version")
 	if _, err := os.Stat(f.p.Home); !os.IsNotExist(err) {
 		t.Fatalf("PAUL_HOME créé : %v", err)
+	}
+}
+
+func TestHookNeverUsesStderr(t *testing.T) {
+	f := newFixture(t)
+	blocker := filepath.Join(t.TempDir(), "home")
+	if err := os.WriteFile(blocker, []byte("a file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PAUL_HOME", blocker)
+	t.Setenv("PAUL_TRANSCRIPTS", f.p.Transcripts)
+	stdin := filepath.Join(t.TempDir(), "stdin")
+	if err := os.WriteFile(stdin, []byte(`{"session_id":"s","prompt":"Revoyons la facturation"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in, err := os.Open(stdin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdin
+	os.Stdin = in
+	t.Cleanup(func() { os.Stdin = saved; in.Close() })
+	// start and end re-execute os.Executable, which is the test binary here.
+	code, out, errOut := f.run("hook", "prompt")
+	if code != 0 || out != "" || errOut != "" {
+		t.Fatalf("code %d, stdout %q, stderr %q", code, out, errOut)
 	}
 }

@@ -4,11 +4,14 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"os/signal"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/jplot/brain/internal/hook"
 	"github.com/jplot/brain/internal/index"
 	"github.com/jplot/brain/internal/lock"
 	"github.com/jplot/brain/internal/memo"
@@ -562,4 +565,14 @@ func webCmd(e *env, args []string) (int, error) {
 		return 0, err
 	}
 	return 0, web.Serve(e.p, !*noOpen, e.out)
+}
+
+func hookCmd(e *env, args []string) (int, error) {
+	if len(args) != 1 {
+		return 0, usagef("hook : attendu start, prompt ou end")
+	}
+	// A closed stdout must give EPIPE, not kill the hook with SIGPIPE.
+	signal.Ignore(syscall.SIGPIPE)
+	hook.Version = Version
+	return hook.Run(args[0], e.p, os.Stdin, e.out), nil
 }
