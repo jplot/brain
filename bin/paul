@@ -67,7 +67,10 @@ install() {
     2) log "verrou d'installation toujours pris, abandon"; return 1 ;;
     *) return 0 ;;
   esac
-  trap 'rmdir "$lock" 2>/dev/null; exit 1' HUP INT TERM
+  part=$home/bin/.paul-$version.part.$$
+  sums=$home/bin/.paul-$version.sums.$$
+  rm -f "$home"/bin/.paul-*.part.* "$home"/bin/.paul-*.sums.*
+  trap 'rm -f "$part" "$sums"; rmdir "$lock" 2>/dev/null; exit 1' HUP INT TERM
   fetch
   status=$?
   trap - HUP INT TERM
@@ -81,8 +84,6 @@ download() {
 
 fetch() {
   [ -x "$bin" ] && return 0
-  part=$home/bin/.paul-$version.part.$$
-  sums=$home/bin/.paul-$version.sums.$$
   say "téléchargement de $name $version"
   if ! download "$part" "$url/$name" || ! download "$sums" "$url/checksums.txt"; then
     rm -f "$part" "$sums"

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -24,6 +25,7 @@ while [ $# -gt 1 ]; do
   shift
 done
 echo "$1" >> "$FAKE_CURL_LOG"
+[ -n "$FAKE_CURL_PARTIAL" ] && : > "$out"
 [ -n "$FAKE_CURL_DELAY" ] && sleep "$FAKE_CURL_DELAY"
 [ -n "$FAKE_CURL_FAIL" ] && exit 22
 cp "$FAKE_SERVE/$(basename "$1")" "$out"
@@ -362,15 +364,15 @@ func TestStaleLockInHookModeIsTakenOver(t *testing.T) {
 }
 
 func TestChecksumsWithoutTheLineOrWithDuplicatesAreRejected(t *testing.T) {
-	good := strings.Repeat("0", 64)
+	sum := sha256.Sum256([]byte(fakePaul))
+	realHash := hex.EncodeToString(sum[:])
 	cases := map[string]func(e *env){
 		"missing line": func(e *env) {
-			e.write("serve/checksums.txt", good+"  paul-darwin-arm64\n", 0o644)
+			e.write("serve/checksums.txt", realHash+"  paul-darwin-arm64\n", 0o644)
 		},
 		"duplicate lines": func(e *env) {
-			sum := sha256.Sum256([]byte(fakePaul))
 			e.write("serve/checksums.txt",
-				hex.EncodeToString(sum[:])+"  "+artifact+"\n"+good+"  "+artifact+"\n", 0o644)
+				realHash+"  "+artifact+"\n"+strings.Repeat("0", 64)+"  "+artifact+"\n", 0o644)
 		},
 	}
 	for name, setup := range cases {
@@ -386,4 +388,34 @@ func TestChecksumsWithoutTheLineOrWithDuplicatesAreRejected(t *testing.T) {
 			e.assertNothingInstalled()
 		})
 	}
+}
+
+func TestLeftoverTemporaryFilesAreSwept(t *testing.T) {
+	e := newEnv(t)
+	leftover := e.write("home/bin/.paul-"+version+".part.12345", "partial", 0o644)
+	other := e.write("home/bin/.paul-0.0.9.sums.999", "old", 0o644)
+	if r := e.run("search", "mot"); r.code != 0 {
+		t.Fatalf("got %+v", r)
+	}
+	for _, p := range []string{leftover, other} {
+		if _, err := os.Stat(p); err == nil {
+			t.Fatalf("%s survived", p)
+		}
+	}
+}
+
+func TestTerminatedDownloadLeavesNoTemporaryFile(t *testing.T) {
+	e := newEnv(t)
+	e.extra = []string{"FAKE_CURL_DELAY=1", "FAKE_CURL_PARTIAL=1"}
+	cmd := e.cmd("search", "mot")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return e.curlCalls("/"+artifact) == 1 })
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+	waitFor(t, func() bool { _, err := os.Stat(filepath.Join(e.home, "install.lock")); return err != nil })
+	e.assertNothingInstalled()
 }
