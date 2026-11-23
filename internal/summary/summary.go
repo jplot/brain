@@ -62,10 +62,11 @@ var runner = RunClaude(model, effort)
 var busyTimeout = 5 * time.Second
 
 type Outcome struct {
-	Status    string
-	Points    int
-	CostUSD   float64
-	SessionID string
+	Status     string
+	Points     int
+	CostUSD    float64
+	SessionID  string
+	SubjectUID string
 }
 
 type Options struct {
@@ -1105,5 +1106,6 @@ func catchup(p paths.Paths, o Options) ([]Outcome, error) {
 	if refreshed, cost := RefreshStale(conn, runner); refreshed > 0 || cost > 0 {
 		outcomes = append(outcomes, Outcome{Status: Refreshed, Points: refreshed, CostUSD: cost})
 	}
-	return outcomes, nil
+	syntheses, err := runSyntheses(conn, user, now)
+	return append(outcomes, syntheses...), err
 }

@@ -424,6 +424,7 @@ func ForgetPoint(d *sql.DB, id int64) error {
 			args  []any
 		}{
 			{"UPDATE episodes SET summary_stale = 1, updated_at = ? WHERE id = ?", []any{at, episode}},
+			{"UPDATE syntheses SET stale = 1, updated_at = ? WHERE EXISTS (SELECT 1 FROM json_each(cited) WHERE value = ?)", []any{at, uid}},
 			{"INSERT OR REPLACE INTO forgotten_points(uid, at) VALUES (?, ?)", []any{uid, at}},
 			{"DELETE FROM point_usage WHERE uid = ?", []any{uid}},
 			{"DELETE FROM points WHERE id = ?", []any{id}},
