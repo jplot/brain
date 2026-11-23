@@ -120,7 +120,6 @@ func FindByTerm(q db.Querier, term string) ([]Subject, error) {
 	return query(q, "WHERE uid = ?1 OR uid IN (SELECT subject_uid FROM subject_terms WHERE term = ?2) ORDER BY uid", term, Normalize(term))
 }
 
-// ByTerms maps each normalized term to the subjects named or aliased by it, in one indexed query.
 func ByTerms(q db.Querier, terms []string) (map[string][]Subject, error) {
 	raw, err := json.Marshal(terms)
 	if err != nil {

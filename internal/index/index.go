@@ -21,6 +21,7 @@ import (
 	"github.com/jplot/brain/internal/lock"
 	"github.com/jplot/brain/internal/paths"
 	"github.com/jplot/brain/internal/repo"
+	"github.com/jplot/brain/internal/subjects"
 	"github.com/jplot/brain/internal/transcript"
 )
 
@@ -124,9 +125,12 @@ func upgrade(conn *sql.DB, p paths.Paths) (stats Stats, upgraded bool, err error
 	// An upgrade killed right after the rebuild leaves an empty version 0 base whose free pages
 	// still hold the old messages: the cleanup must run here too.
 	if version == 0 && empty {
-		return stats, false, finishUpgrade(conn)
+		return stats, false, errors.Join(subjects.RebuildTerms(conn), finishUpgrade(conn))
 	}
 	if err := db.RebuildIndex(conn); err != nil {
+		return stats, false, err
+	}
+	if err := subjects.RebuildTerms(conn); err != nil {
 		return stats, false, err
 	}
 	stats = All(conn, p)

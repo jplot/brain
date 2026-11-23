@@ -61,11 +61,13 @@ type Episode struct {
 
 // Since and Until are calendar days (YYYY-MM-DD) in the local zone, both included.
 // Subject is a name, keyword or uid and covers its descendants; replaced points show only with History.
+// OwnOnly takes Subject as a uid and leaves its descendants out.
 // Order "score" ranks by Score with the terms of Text; the default is importance then recency.
 type PointFilter struct {
 	Kind, Subject, Text string
 	Order               string
 	OpenOnly, History   bool
+	OwnOnly             bool
 	PointID, EpisodeID  int64
 	Since, Until        string
 	Limit               int
@@ -118,7 +120,9 @@ func VisiblePoints(q db.Querier, f PointFilter) ([]Point, error) {
 	if !f.History {
 		clauses = append(clauses, "p.superseded_by_uid IS NULL")
 	}
-	if f.Subject != "" {
+	if f.Subject != "" && f.OwnOnly {
+		add("p.subject_uid = ?", f.Subject)
+	} else if f.Subject != "" {
 		tree, err := subjects.TreeByTerm(q, f.Subject)
 		if err != nil {
 			return nil, err

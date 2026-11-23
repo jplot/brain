@@ -12,10 +12,12 @@ import (
 	"github.com/jplot/brain/internal/subjects"
 )
 
-const maxSubjects = 3
+const (
+	maxSubjects = 3
+	maxRun      = 6
+)
 
-// messageTerms keeps the words of 3 characters or more and every pair of consecutive words,
-// so a two-word subject name matches.
+// Runs of 6 words: a subject name of 6 words or fewer must match whole.
 func messageTerms(prompt string) []string {
 	seen := map[string]bool{}
 	var terms []string
@@ -30,8 +32,8 @@ func messageTerms(prompt string) []string {
 		if utf8.RuneCountInString(w) >= 3 {
 			add(w)
 		}
-		if i+1 < len(words) {
-			add(w + " " + words[i+1])
+		for n := 2; n <= maxRun && i+n <= len(words); n++ {
+			add(strings.Join(words[i:i+n], " "))
 		}
 	}
 	return terms
@@ -42,7 +44,6 @@ type ambiguity struct {
 	candidates []subjects.Subject
 }
 
-// Inject answers in the hook of every message: two indexed queries, no git, no model.
 func Inject(q db.Querier, sessionID, prompt string) (string, error) {
 	terms := messageTerms(prompt)
 	if len(terms) == 0 {
@@ -74,6 +75,17 @@ func Inject(q db.Querier, sessionID, prompt string) (string, error) {
 		if len(out) == maxSubjects || slices.ContainsFunc(d.candidates, func(s subjects.Subject) bool { return chosen[s.UID] }) {
 			continue
 		}
+		key := "ambiguous:" + d.term
+		said, err := wasInjected(q, sessionID, key)
+		if err != nil {
+			return "", err
+		}
+		if said {
+			continue
+		}
+		if _, err := q.ExecContext(background, "INSERT OR IGNORE INTO injected(session_id, subject_uid) VALUES (?, ?)", sessionID, key); err != nil {
+			return "", err
+		}
 		names := make([]string, len(d.candidates))
 		for i, c := range d.candidates {
 			names[i] = c.Name
@@ -86,11 +98,11 @@ func Inject(q db.Querier, sessionID, prompt string) (string, error) {
 		if shown == maxSubjects {
 			break
 		}
-		var done int
-		if err := q.QueryRowContext(background, "SELECT count(*) FROM injected WHERE session_id = ? AND subject_uid = ?", sessionID, s.UID).Scan(&done); err != nil {
+		done, err := wasInjected(q, sessionID, s.UID)
+		if err != nil {
 			return "", err
 		}
-		if done > 0 {
+		if done {
 			continue
 		}
 		text, used, err := index(q, s.UID, words, now)
@@ -107,4 +119,10 @@ func Inject(q db.Querier, sessionID, prompt string) (string, error) {
 		shown++
 	}
 	return strings.Join(out, "\n"), nil
+}
+
+func wasInjected(q db.Querier, sessionID, key string) (bool, error) {
+	var n int
+	err := q.QueryRowContext(background, "SELECT count(*) FROM injected WHERE session_id = ? AND subject_uid = ?", sessionID, key).Scan(&n)
+	return n > 0, err
 }

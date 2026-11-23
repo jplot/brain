@@ -11,8 +11,6 @@ CREATE TABLE IF NOT EXISTS links(
     target_uid TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
     origin TEXT NOT NULL CHECK(origin IN ('model','user')), episode_uid TEXT,
     updated_at TEXT NOT NULL, PRIMARY KEY(source_uid, type, target_uid));
-CREATE TABLE IF NOT EXISTS subject_terms(
-    term TEXT NOT NULL, subject_uid TEXT NOT NULL, PRIMARY KEY(term, subject_uid)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS merged(
     from_uid TEXT PRIMARY KEY, into_uid TEXT NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS episodes(
@@ -84,9 +82,11 @@ CREATE TABLE IF NOT EXISTS repo_cache(
 CREATE TABLE IF NOT EXISTS pending_paths(
     session_id TEXT NOT NULL, path TEXT NOT NULL, attempts INTEGER NOT NULL, last_at TEXT NOT NULL,
     PRIMARY KEY(session_id, path));
+CREATE TABLE IF NOT EXISTS subject_terms(
+    term TEXT NOT NULL, subject_uid TEXT NOT NULL, PRIMARY KEY(term, subject_uid)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS point_usage(uid TEXT PRIMARY KEY, last_used_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS injected(
     session_id TEXT NOT NULL, subject_uid TEXT NOT NULL, PRIMARY KEY(session_id, subject_uid));
 `
 
-var indexTables = []string{"point_usage", "pending_paths", "injected", "repo_cache", "session_repos", "messages_fts", "messages", "sessions", "agent_uses", "files"}
+var indexTables = []string{"subject_terms", "point_usage", "pending_paths", "injected", "repo_cache", "session_repos", "messages_fts", "messages", "sessions", "agent_uses", "files"}

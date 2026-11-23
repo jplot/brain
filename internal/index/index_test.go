@@ -1094,3 +1094,27 @@ func TestForgetDuringRetryGitCallLeavesNoRepoLink(t *testing.T) {
 		t.Fatal("repo link written for a session forgotten during the git call")
 	}
 }
+
+func TestUpgradeRebuildsSubjectTerms(t *testing.T) {
+	for _, version := range []int{0, 1} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			f := newFixture(t)
+			f.oldBase(version)
+			f.exec("INSERT INTO subjects(uid, kind, name, aliases, created_at, updated_at) VALUES ('s1', 'subject', 'Éclair Lab', '[\"elab\"]', 't', 't')")
+			f.refresh()
+			if n := f.count("SELECT count(*) FROM subject_terms WHERE subject_uid = 's1' AND term IN ('eclair lab', 'elab')"); n != 2 {
+				t.Fatalf("terms %d", n)
+			}
+		})
+	}
+}
+
+func TestEmptyVersionZeroBaseRebuildsSubjectTerms(t *testing.T) {
+	f := newFixture(t)
+	f.exec("INSERT INTO subjects(uid, kind, name, aliases, created_at, updated_at) VALUES ('s1', 'subject', 'Éclair Lab', '[]', 't', 't')")
+	f.exec("PRAGMA user_version=0")
+	f.refresh()
+	if n := f.count("SELECT count(*) FROM subject_terms WHERE term = 'eclair lab'"); n != 1 {
+		t.Fatalf("terms %d", n)
+	}
+}

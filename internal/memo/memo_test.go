@@ -96,7 +96,7 @@ func TestStartInRepoShowsSubjectIndex(t *testing.T) {
 	f.session("s1", "Other work", "2026-11-20T10:00:00.000Z")
 
 	for _, cwd := range []string{"/work/widget", "/work/widget/cmd/tool"} {
-		got, err := Start(f.db, cwd, now)
+		got, err := Start(f.db, cwd, "sess", now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -120,7 +120,7 @@ func TestStartInRepoShowsSubjectIndex(t *testing.T) {
 
 func mustStart(t *testing.T, f *fixture, cwd string) string {
 	t.Helper()
-	got, err := Start(f.db, cwd, now)
+	got, err := Start(f.db, cwd, "sess", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,5 +368,96 @@ func TestInjectFast(t *testing.T) {
 	t.Logf("inject: %v", elapsed)
 	if elapsed > 100*time.Millisecond {
 		t.Fatalf("took %v", elapsed)
+	}
+}
+
+func TestIndexNeverShowsDescendantPoints(t *testing.T) {
+	f := newFixture(t)
+	repo, _ := subjects.EnsureRepo(f.db, "example/widget", "widget")
+	child, err := subjects.Create(f.db, "Child topic", nil, &repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.point(child, "decision", "child secret decision", 5, false)
+	f.point(child, "pending", "child secret pending", 5, false)
+	f.point(repo, "fact", "own fact of the repository", 1, false)
+	f.exec("INSERT INTO repo_cache VALUES ('/work/widget', ?, 't')", repo)
+	index, err := Index(f.db, repo, []string{"child", "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := mustStart(t, f, "/work/widget")
+	for _, got := range []string{index, start} {
+		if strings.Contains(got, "secret") || !strings.Contains(got, "- own fact of the repository") ||
+			!strings.Contains(got, "(suspens ouverts : 0, décisions en vigueur : 0)") {
+			t.Fatalf("got\n%s", got)
+		}
+	}
+}
+
+func TestStartRecordsRepoSubjectAsInjected(t *testing.T) {
+	f := newFixture(t)
+	repo, _ := subjects.EnsureRepo(f.db, "example/widget", "widget")
+	f.exec("INSERT INTO repo_cache VALUES ('/work/widget', ?, 't')", repo)
+	mustStart(t, f, "/work/widget")
+	if got, _ := Inject(f.db, "sess", "tell me about widget"); got != "" {
+		t.Fatalf("index repeated: %q", got)
+	}
+}
+
+func TestStartShowsFirstOfMonthAsOrdinal(t *testing.T) {
+	f := newFixture(t)
+	f.subject("Alpha")
+	f.session("s1", "Title", "2026-11-20T10:00:00.000Z")
+	got, err := Start(f.db, "/nowhere", "sess", time.Date(2026, 12, 1, 12, 0, 0, 0, time.Local))
+	if err != nil || !strings.Contains(got, "Aujourd'hui : mardi 1er décembre 2026.") {
+		t.Fatalf("%v\n%s", err, got)
+	}
+}
+
+func TestInjectLongSubjectName(t *testing.T) {
+	f := newFixture(t)
+	f.subject("Migration du service de facturation mensuelle")
+	got, _ := Inject(f.db, "sess", "où en est la migration du service de facturation mensuelle ce mois ?")
+	if !strings.Contains(got, "Sujet « Migration du service de facturation mensuelle »") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestInjectAmbiguityOncePerSession(t *testing.T) {
+	f := newFixture(t)
+	f.subject("Mira tool", "mira")
+	f.subject("Mira Dupont", "mira")
+	first, _ := Inject(f.db, "s1", "ask mira")
+	if !strings.Contains(first, "Plusieurs sujets") {
+		t.Fatalf("first %q", first)
+	}
+	if again, _ := Inject(f.db, "s1", "and mira again"); again != "" {
+		t.Fatalf("again %q", again)
+	}
+	if other, _ := Inject(f.db, "s2", "ask mira"); !strings.Contains(other, "Plusieurs sujets") {
+		t.Fatalf("other session %q", other)
+	}
+}
+
+func TestStartOutsideRepoFastWith100000Messages(t *testing.T) {
+	f := newFixture(t)
+	a := f.subject("Alpha")
+	f.session("s1", "Title", "2026-11-20T10:00:00.000Z", a)
+	f.exec("INSERT INTO episodes(uid, session_id, start_ts, end_ts, title, created_at, updated_at) VALUES ('e-solo', 'solo', 't', '2026-11-21T10:00:00.000Z', 'Episode only', 't', 't')")
+	f.exec("INSERT INTO episode_subjects VALUES ('e-solo', ?)", a)
+	tx, _ := f.db.Begin()
+	for i := range 100000 {
+		if _, err := tx.Exec("INSERT INTO messages(key, session_id, file, ts, role, text) VALUES (?, ?, 'f', '2026-11-01T10:00:00.000Z', 'user', 'bonjour')", fmt.Sprint("m", i), fmt.Sprint("x", i%1000)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	begin := time.Now()
+	got := mustStart(t, f, "/nowhere")
+	if elapsed := time.Since(begin); elapsed > 300*time.Millisecond || !strings.Contains(got, "Title [Alpha]") || !strings.Contains(got, "- 2026-11-21 Episode only [Alpha]") {
+		t.Fatalf("%v\n%s", elapsed, got)
 	}
 }

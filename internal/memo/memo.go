@@ -107,8 +107,7 @@ func sessionLine(s search.SessionRow, withSubjects bool) string {
 	return line
 }
 
-// Start returns "" when there is nothing to remember: no repo index and no session.
-func Start(q db.Querier, cwd string, now time.Time) (string, error) {
+func Start(q db.Querier, cwd, sessionID string, now time.Time) (string, error) {
 	var body []string
 	uid, err := repoSubject(q, cwd)
 	if err != nil {
@@ -122,13 +121,16 @@ func Start(q db.Querier, cwd string, now time.Time) (string, error) {
 		if err := memory.MarkUsed(q, used, now); err != nil {
 			return "", err
 		}
+		if _, err := q.ExecContext(background, "INSERT OR IGNORE INTO injected(session_id, subject_uid) VALUES (?, ?)", sessionID, uid); err != nil {
+			return "", err
+		}
 		body = []string{text}
 	} else {
-		sessions, err := search.ListSessions(q, search.ListFilter{Limit: 3})
+		sessions, err := lastSessions(q, "", 3)
 		if err != nil {
 			return "", err
 		}
-		for _, s := range sessions[:min(len(sessions), 3)] {
+		for _, s := range sessions {
 			body = append(body, sessionLine(s, true))
 		}
 		if len(body) > 0 {
@@ -146,7 +148,6 @@ type slot struct {
 	text  string
 }
 
-// Index returns at most 500 characters; what does not fit is dropped from the least useful part first.
 func Index(q db.Querier, uid string, terms []string) (string, error) {
 	text, _, err := index(q, uid, terms, time.Now())
 	return text, err
@@ -184,20 +185,23 @@ func index(q db.Querier, uid string, terms []string, now time.Time) (string, []s
 	detail := fmt.Sprintf("détail : paul souvenirs --subject %q", s.Name)
 	room := indexLimit - utf8.RuneCountInString(head) - utf8.RuneCountInString(detail) - 2
 	var slots []slot
-	add := func(order int, text string, cap int) {
+	add := func(order int, text string, cap int) bool {
 		text = clip(text, min(cap, room-1))
-		if n := utf8.RuneCountInString(text); n >= 12 {
+		n := utf8.RuneCountInString(text)
+		if n >= 12 {
 			room -= n + 1
 			slots = append(slots, slot{order, text})
 		}
+		return n >= 12
 	}
 	if synthesis != "" {
 		add(1, "Synthèse : "+firstSentence(synthesis), 160)
 	}
 	var used []string
 	for i, p := range shown {
-		add(3+i, "- "+p.Text, 90)
-		used = append(used, p.UID)
+		if add(3+i, "- "+p.Text, 90) {
+			used = append(used, p.UID)
+		}
 	}
 	if len(sessions) > 0 {
 		lines := make([]string, len(sessions))
@@ -232,10 +236,15 @@ func index(q db.Querier, uid string, terms []string, now time.Time) (string, []s
 }
 
 // lastSessions reads episodes, not messages: grouping 100 000 messages by session cost 80 ms of a 100 ms budget.
+// An empty uid means every subject.
 func lastSessions(q db.Querier, uid string, limit int) ([]search.SessionRow, error) {
+	where, args := "", []any{}
+	if uid != "" {
+		where, args = " WHERE e.session_id IN (SELECT e2.session_id FROM episodes e2 JOIN episode_subjects es ON es.episode_uid = e2.uid WHERE es.subject_uid = ?)", []any{uid}
+	}
 	rows, err := q.QueryContext(background, "SELECT e.session_id, COALESCE(NULLIF(s.title, ''), MAX(e.title)), MAX(e.end_ts)"+
-		" FROM episodes e JOIN episode_subjects es ON es.episode_uid = e.uid LEFT JOIN sessions s ON s.id = e.session_id"+
-		" WHERE es.subject_uid = ? GROUP BY e.session_id ORDER BY MAX(e.end_ts) DESC, e.session_id LIMIT ?", uid, limit)
+		" FROM episodes e LEFT JOIN sessions s ON s.id = e.session_id"+where+
+		" GROUP BY e.session_id ORDER BY MAX(e.end_ts) DESC, e.session_id LIMIT ?", append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -252,11 +261,40 @@ func lastSessions(q db.Querier, uid string, limit int) ([]search.SessionRow, err
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for i := range out {
+		names, err := sessionSubjects(q, out[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		out[i].Subjects = names
+	}
+	return out, nil
+}
+
+func sessionSubjects(q db.Querier, sessionID string) ([]string, error) {
+	rows, err := q.QueryContext(background, "SELECT DISTINCT s.name FROM episodes e JOIN episode_subjects es ON es.episode_uid = e.uid"+
+		" JOIN subjects s ON s.uid = es.subject_uid WHERE e.session_id = ? ORDER BY s.name", sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		names = append(names, n)
+	}
+	return names, rows.Err()
 }
 
 func bestPoints(q db.Querier, uid string, terms []string, now time.Time) ([]memory.Point, error) {
-	points, err := memory.VisiblePoints(q, memory.PointFilter{Subject: uid, Limit: candidates})
+	points, err := memory.VisiblePoints(q, memory.PointFilter{Subject: uid, OwnOnly: true, Limit: candidates})
 	if err != nil {
 		return nil, err
 	}
