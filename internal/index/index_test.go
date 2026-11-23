@@ -945,15 +945,64 @@ func TestGitMissingDoesNotBlockIndexing(t *testing.T) {
 	if stats.Failed != 0 || stats.Messages != 1 || f.messages() != 1 {
 		t.Fatalf("stats %+v", stats)
 	}
-	if f.count("SELECT count(*) FROM session_repos") != 0 || f.offset(path) != 0 {
-		t.Fatal("discovery not left for the next pass")
+	if f.count("SELECT count(*) FROM session_repos") != 0 || f.count("SELECT count(*) FROM pending_paths") != 1 {
+		t.Fatal("candidate not left pending")
 	}
 	t.Setenv("PATH", original)
 	if got := f.all(); got.Failed != 0 || got.Messages != 0 {
 		t.Fatalf("retry stats %+v", got)
 	}
-	if got := f.repoNames("s"); got != "alpha" || f.offset(path) == 0 {
+	if got := f.repoNames("s"); got != "alpha" || f.offset(path) == 0 || f.count("SELECT count(*) FROM pending_paths") != 0 {
 		t.Fatalf("retry found %q", got)
+	}
+}
+
+func TestFailingGitNeverRereadsTheTranscript(t *testing.T) {
+	f := newFixture(t)
+	a := gitRepo(t, filepath.Join(t.TempDir(), "a"), "git@example.org:o/alpha.git")
+	var parsed atomic.Int64
+	real := parseClaude
+	parseClaude = func(raw []byte, is func(string) bool) ([]transcript.Item, error) {
+		parsed.Add(1)
+		return real(raw, is)
+	}
+	defer func() { parseClaude = real }()
+	path := f.transcript("-p", "s1", withCwd(user("un"), a), withCwd(user("deux"), a))
+	original := os.Getenv("PATH")
+	t.Setenv("PATH", t.TempDir())
+	f.all()
+	if f.count("SELECT count(*) FROM pending_paths") != 1 {
+		t.Fatal("nothing pending after the first pass")
+	}
+	appendLines(t, path, withCwd(user("trois"), a))
+	f.all()
+	appendLines(t, path, withCwd(user("quatre"), a))
+	f.all()
+	info, _ := os.Stat(path)
+	if parsed.Load() != 4 || f.offset(path) != info.Size() || f.messages() != 4 {
+		t.Fatalf("parsed %d, offset %d of %d", parsed.Load(), f.offset(path), info.Size())
+	}
+	t.Setenv("PATH", original)
+	f.all()
+	if got := f.repoNames("s"); got != "alpha" || f.count("SELECT count(*) FROM pending_paths") != 0 {
+		t.Fatalf("resolved %q", got)
+	}
+}
+
+func TestPathFailingThreeTimesIsDropped(t *testing.T) {
+	f := newFixture(t)
+	a := gitRepo(t, filepath.Join(t.TempDir(), "a"), "git@example.org:o/alpha.git")
+	f.transcript("-p", "s1", withCwd(user("un"), a))
+	t.Setenv("PATH", t.TempDir())
+	for want := 1; want <= 2; want++ {
+		f.all()
+		if got := f.count("SELECT attempts FROM pending_paths"); got != want {
+			t.Fatalf("pass %d: %d attempts", want, got)
+		}
+	}
+	f.all()
+	if f.count("SELECT count(*) FROM pending_paths") != 0 || f.count("SELECT count(*) FROM session_repos") != 0 {
+		t.Fatal("path kept after three failures")
 	}
 }
 

@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -14,6 +15,9 @@ import (
 
 	"github.com/jplot/brain/internal/db"
 )
+
+// ErrGit marks a git execution failure (missing binary, shim, deadline), as opposed to "not a repository".
+var ErrGit = errors.New("git inutilisable")
 
 var gitTimeout = 5 * time.Second
 
@@ -102,7 +106,7 @@ func runGit(ctx context.Context, dir string, args ...string) (string, bool, erro
 	if errors.As(err, &exit) && (exit.ExitCode() == 128 || exit.ExitCode() == 2) && ctx.Err() == nil {
 		return "", false, nil
 	}
-	return "", false, fmt.Errorf("git %s : %w", args[0], err)
+	return "", false, fmt.Errorf("%w: git %s : %w", ErrGit, args[0], cmp.Or(ctx.Err(), err))
 }
 
 func Cached(ctx context.Context, q db.Querier, path string) (string, bool, error) {

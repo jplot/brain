@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -292,8 +293,21 @@ func TestSlowGitHonoursDeadline(t *testing.T) {
 	if elapsed := time.Since(start); err == nil || ok || elapsed > 500*time.Millisecond {
 		t.Fatalf("%v, %v after %v", ok, err, elapsed)
 	}
+	if !errors.Is(err, ErrGit) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("not a git deadline error: %v", err)
+	}
 	if n := count(t, d, "repo_cache") + count(t, d, "subjects"); n != 0 {
 		t.Fatalf("%d rows written", n)
+	}
+}
+
+func TestMissingGitIsErrGit(t *testing.T) {
+	d := openDB(t)
+	repo := makeRepo(t, filepath.Join(t.TempDir(), "atelier"))
+	t.Setenv("PATH", t.TempDir())
+	_, _, err := Cached(bg, d, repo)
+	if !errors.Is(err, ErrGit) || !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("got %v", err)
 	}
 }
 

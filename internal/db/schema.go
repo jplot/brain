@@ -74,8 +74,11 @@ CREATE TABLE IF NOT EXISTS session_repos(
     session_id TEXT NOT NULL, subject_uid TEXT NOT NULL, PRIMARY KEY(session_id, subject_uid));
 CREATE TABLE IF NOT EXISTS repo_cache(
     path TEXT PRIMARY KEY, subject_uid TEXT, checked_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS pending_paths(
+    session_id TEXT NOT NULL, path TEXT NOT NULL, attempts INTEGER NOT NULL, last_at TEXT NOT NULL,
+    PRIMARY KEY(session_id, path));
 CREATE TABLE IF NOT EXISTS injected(
     session_id TEXT NOT NULL, subject_uid TEXT NOT NULL, PRIMARY KEY(session_id, subject_uid));
 `
 
-var indexTables = []string{"injected", "repo_cache", "session_repos", "messages_fts", "messages", "sessions", "agent_uses", "files"}
+var indexTables = []string{"pending_paths", "injected", "repo_cache", "session_repos", "messages_fts", "messages", "sessions", "agent_uses", "files"}

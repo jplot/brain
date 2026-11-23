@@ -119,10 +119,11 @@ func TestRebuildIndexClearsRepoCache(t *testing.T) {
 	mustExec(t, d, `INSERT INTO repo_cache VALUES ('/some/dir',NULL,'t')`)
 	mustExec(t, d, `INSERT INTO session_repos VALUES ('s1','u1')`)
 	mustExec(t, d, `INSERT INTO injected VALUES ('s1','u1')`)
+	mustExec(t, d, `INSERT INTO pending_paths VALUES ('s1','/d',1,'t')`)
 	if err := RebuildIndex(d); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"repo_cache", "session_repos", "injected"} {
+	for _, table := range []string{"repo_cache", "session_repos", "injected", "pending_paths"} {
 		if n := count(t, d, "SELECT count(*) FROM "+table); n != 0 {
 			t.Fatalf("%s kept %d rows", table, n)
 		}

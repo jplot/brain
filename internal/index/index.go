@@ -11,7 +11,9 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 const (
 	busyTimeout = 30 * time.Second
 	gitBudget   = 5 * time.Second
+	maxAttempts = 3
 )
 
 var ctx = context.Background()
@@ -75,19 +78,24 @@ func Refresh(conn *sql.DB, p paths.Paths) error {
 
 func All(conn *sql.DB, p paths.Paths) Stats {
 	var stats Stats
+	ps := &pass{}
+	if err := ps.retryPending(conn); err != nil {
+		stats.Failed++
+		log.Printf("reprise des chemins en attente échouée (%T)", err)
+	}
 	files, _ := filepath.Glob(filepath.Join(p.Transcripts, "*", "*.jsonl"))
 	for _, name := range files {
-		indexOne(conn, name, false, &stats)
+		indexOne(conn, ps, name, false, &stats)
 	}
 	journals, _ := filepath.Glob(filepath.Join(p.Journals(), "*.jsonl"))
 	for _, name := range journals {
-		indexOne(conn, name, true, &stats)
+		indexOne(conn, ps, name, true, &stats)
 	}
 	return stats
 }
 
-func indexOne(conn *sql.DB, name string, journal bool, stats *Stats) {
-	done, err := indexFile(conn, name, journal)
+func indexOne(conn *sql.DB, ps *pass, name string, journal bool, stats *Stats) {
+	done, err := indexFile(conn, ps, name, journal)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 	case err != nil:
@@ -149,7 +157,7 @@ var vacuum = func(conn *sql.DB) error {
 	return nil
 }
 
-func indexFile(conn *sql.DB, name string, journal bool) (Stats, error) {
+func indexFile(conn *sql.DB, ps *pass, name string, journal bool) (Stats, error) {
 	var stats Stats
 	f, err := os.Open(name)
 	if err != nil {
@@ -182,8 +190,7 @@ func indexFile(conn *sql.DB, name string, journal bool) (Stats, error) {
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return stats, err
 	}
-	start := offset
-	r := &reader{tx: tx, name: name, journal: journal, forgotten: map[string]bool{}, touched: map[string]*touched{}}
+	r := &reader{tx: tx, name: name, journal: journal, forgotten: map[string]bool{}, ps: ps, touched: map[string]*touched{}}
 	if err := r.loadForgotten(); err != nil {
 		return stats, err
 	}
@@ -201,11 +208,8 @@ func indexFile(conn *sql.DB, name string, journal bool) (Stats, error) {
 			return Stats{}, err
 		}
 	}
-	// A git failure keeps the offset: the next pass reads the same lines again (messages are
-	// INSERT OR IGNORE) and retries the discovery, which has no other trace of those lines.
 	if err := r.discover(); err != nil {
-		log.Printf("découverte des dépôts reportée : %s (%T)", name, err)
-		offset = start
+		return Stats{}, err
 	}
 	_, err = tx.Exec(`INSERT INTO files(path, offset, size) VALUES (?, ?, ?)
 		ON CONFLICT(path) DO UPDATE SET offset = excluded.offset, size = excluded.size`, name, offset, info.Size())
@@ -233,6 +237,7 @@ type reader struct {
 	name      string
 	journal   bool
 	forgotten map[string]bool
+	ps        *pass
 	touched   map[string]*touched
 }
 
@@ -261,39 +266,151 @@ func (r *reader) touch(e transcript.Entry) {
 	}
 }
 
-// The working directory goes first and every directory is looked up once per pass:
+// The working directory goes first and every directory is looked up once per file:
 // a session that edits 200 files of one repository costs one git lookup.
 func (r *reader) discover() error {
 	gitCtx, cancel := context.WithTimeout(ctx, gitBudget)
 	defer cancel()
-	looked := map[string]string{}
+	memo := map[string]string{}
 	for session, t := range r.touched {
-		for _, p := range append(t.cwds, t.files...) {
+		for _, p := range slices.Concat(t.cwds, t.files) {
 			dir, ok := existingDir(p)
 			if !ok {
 				continue
 			}
-			uid, done := looked[dir]
-			if !done {
-				var found bool
-				var err error
-				if uid, found, err = repo.Cached(gitCtx, r.tx, dir); err != nil {
+			uid, resolved, failed, err := r.ps.lookup(gitCtx, r.tx, dir, memo)
+			if err != nil {
+				return err
+			}
+			if !resolved {
+				if err := deferPath(r.tx, session, dir, failed); err != nil {
 					return err
 				}
-				if !found {
-					uid = ""
-				}
-				looked[dir] = uid
-			}
-			if uid == "" {
 				continue
 			}
-			if _, err := r.tx.Exec("INSERT OR IGNORE INTO session_repos(session_id, subject_uid) VALUES (?, ?)", session, uid); err != nil {
+			if err := link(r.tx, session, uid); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// pass is shared by all the files of one indexing pass: after the first git execution
+// failure no other git call is made, so a missing git costs one failed exec per pass.
+type pass struct{ gitDown bool }
+
+// resolved is false when git could not answer; failed tells that this very call hit the
+// failure, as opposed to being skipped because an earlier one did. An error is never git's.
+func (ps *pass) lookup(c context.Context, q db.Querier, dir string, memo map[string]string) (uid string, resolved, failed bool, err error) {
+	if uid, ok := memo[dir]; ok {
+		return uid, true, false, nil
+	}
+	if ps.gitDown {
+		return "", false, false, nil
+	}
+	uid, _, err = repo.Cached(c, q, dir)
+	if errors.Is(err, repo.ErrGit) {
+		ps.gitDown = true
+		log.Printf("découverte des dépôts reportée : %s", gitReason(err))
+		return "", false, true, nil
+	}
+	if err != nil {
+		return "", false, false, err
+	}
+	memo[dir] = uid
+	return uid, true, false, nil
+}
+
+func gitReason(err error) string {
+	switch {
+	case errors.Is(err, exec.ErrNotFound):
+		return "git absent"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "délai git dépassé"
+	}
+	return "git en échec"
+}
+
+func link(q db.Querier, session, uid string) error {
+	if uid == "" {
+		return nil
+	}
+	_, err := q.ExecContext(ctx, "INSERT OR IGNORE INTO session_repos(session_id, subject_uid) VALUES (?, ?)", session, uid)
+	return err
+}
+
+func deferPath(q db.Querier, session, dir string, failed bool) error {
+	attempts := 0
+	if failed {
+		attempts = 1
+	}
+	now := db.Stamp(time.Time{})
+	if _, err := q.ExecContext(ctx, `INSERT INTO pending_paths(session_id, path, attempts, last_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT(session_id, path) DO UPDATE SET attempts = attempts + ?, last_at = excluded.last_at`,
+		session, dir, attempts, now, attempts); err != nil {
+		return err
+	}
+	_, err := q.ExecContext(ctx, "DELETE FROM pending_paths WHERE session_id = ? AND path = ? AND attempts >= ?", session, dir, maxAttempts)
+	return err
+}
+
+type pendingPath struct{ session, path string }
+
+func (ps *pass) retryPending(conn *sql.DB) error {
+	rows, err := conn.QueryContext(ctx, "SELECT session_id, path FROM pending_paths")
+	if err != nil {
+		return err
+	}
+	var pending []pendingPath
+	for rows.Next() {
+		var p pendingPath
+		if err := rows.Scan(&p.session, &p.path); err != nil {
+			rows.Close()
+			return err
+		}
+		pending = append(pending, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil || len(pending) == 0 {
+		return err
+	}
+	gitCtx, cancel := context.WithTimeout(ctx, gitBudget)
+	defer cancel()
+	memo := map[string]string{}
+	for _, p := range pending {
+		dir, ok := existingDir(p.path)
+		if !ok {
+			if err := forgetPath(conn, p); err != nil {
+				return err
+			}
+			continue
+		}
+		uid, resolved, failed, err := ps.lookup(gitCtx, conn, dir, memo)
+		if err != nil {
+			return err
+		}
+		if !resolved {
+			if failed {
+				if err := deferPath(conn, p.session, p.path, true); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if err := link(conn, p.session, uid); err != nil {
+			return err
+		}
+		if err := forgetPath(conn, p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func forgetPath(q db.Querier, p pendingPath) error {
+	_, err := q.ExecContext(ctx, "DELETE FROM pending_paths WHERE session_id = ? AND path = ?", p.session, p.path)
+	return err
 }
 
 func existingDir(p string) (string, bool) {
