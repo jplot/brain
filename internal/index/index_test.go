@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -402,65 +403,6 @@ func TestTitleBeforeAnyMessage(t *testing.T) {
 	}
 }
 
-func (f *fixture) projectsByText() string {
-	f.t.Helper()
-	rows, err := f.db.Query("SELECT text, project FROM messages ORDER BY text")
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var a, b string
-		rows.Scan(&a, &b)
-		out = append(out, a+"="+b)
-	}
-	return strings.Join(out, " ")
-}
-
-func TestMessageTakesProjectOfItsCwd(t *testing.T) {
-	t.Skip("Task 7")
-	f := newFixture(t)
-	f.transcript("-p", "s1", withCwd(user("un"), "/a"), withCwd(user("deux"), "/b"))
-	f.all()
-	if got := f.projectsByText(); got != "deux=path:/b un=path:/a" {
-		t.Fatal(got)
-	}
-}
-
-func TestMissingCwdKeepsLastSeenAcrossPasses(t *testing.T) {
-	t.Skip("Task 7")
-	f := newFixture(t)
-	path := f.transcript("-p", "s1", withCwd(user("un"), "/a"), withoutCwd(user("deux")))
-	f.all()
-	appendLines(t, path, withoutCwd(user("trois")))
-	f.all()
-	if got := f.projectsByText(); got != "deux=path:/a trois=path:/a un=path:/a" {
-		t.Fatal(got)
-	}
-}
-
-func TestUnknownCwdGoesToRoots(t *testing.T) {
-	t.Skip("Task 7")
-	f := newFixture(t)
-	f.transcript("-p", "s1", withoutCwd(user("un")))
-	f.all()
-	if got := f.one("SELECT project FROM messages"); got != "roots" {
-		t.Fatal(got)
-	}
-}
-
-func TestMissingCwdUsesLaunchProjectOfSession(t *testing.T) {
-	t.Skip("Task 7")
-	f := newFixture(t)
-	f.transcript("-p", "s1", withCwd(user("un"), "/a"))
-	f.transcript("-q", "s2", withoutCwd(user("deux")))
-	f.all()
-	if got := f.one("SELECT project FROM messages WHERE text = 'deux'"); got != "path:/a" {
-		t.Fatal(got)
-	}
-}
-
 func TestAgentReportAcrossPasses(t *testing.T) {
 	f := newFixture(t)
 	path := f.transcript("-p", "s1", assistantUse("toolu_1"))
@@ -469,28 +411,6 @@ func TestAgentReportAcrossPasses(t *testing.T) {
 	f.all()
 	if got := f.one("SELECT role FROM messages WHERE text = 'rapport final'"); got != "subagent" {
 		t.Fatal(got)
-	}
-}
-
-func TestRebuildKeepsStateAndRecomputesIndex(t *testing.T) {
-	t.Skip("Task 7")
-	f := newFixture(t)
-	f.transcript("-p", "s1", withCwd(user("un"), "/a"), withCwd(user("deux"), "/b"))
-	f.all()
-	f.exec("INSERT INTO accesses(reader, target, updated_at) VALUES ('path:/a', 'path:/b', '2026-01-01T00:00:00.000Z')")
-	before := f.projectsByText()
-	if err := db.RebuildIndex(f.db); err != nil {
-		t.Fatal(err)
-	}
-	if f.messages() != 0 {
-		t.Fatal("index not emptied")
-	}
-	f.all()
-	if f.projectsByText() != before {
-		t.Fatal("index differs after rebuild")
-	}
-	if f.one("SELECT label || label_by FROM projects WHERE id = 'path:/a'") != "workuser" || f.count("SELECT count(*) FROM accesses") != 1 {
-		t.Fatal("state lost")
 	}
 }
 
@@ -878,16 +798,6 @@ func TestJournalCwdAndTitle(t *testing.T) {
 	}
 }
 
-func TestJournalWithoutCwdGoesToRoots(t *testing.T) {
-	t.Skip("Task 7")
-	f := newFixture(t)
-	f.journal(journalLine("1", "user", "bonjour"))
-	f.all()
-	if got := f.one("SELECT project FROM messages"); got != "roots" {
-		t.Fatal(got)
-	}
-}
-
 func TestForgottenSessionStaysForgottenAfterShrink(t *testing.T) {
 	f := newFixture(t)
 	path := f.journal(journalLine("1", "user", "ancien texte nettement plus long que le nouveau"))
@@ -937,5 +847,130 @@ func TestWriteLockTakenBeforeReadingOffset(t *testing.T) {
 	}
 	if stats.Failed != 0 || f.messages() != 1 {
 		t.Fatalf("stats %+v", stats)
+	}
+}
+
+func gitRepo(t *testing.T, path, remote string) string {
+	t.Helper()
+	for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", remote}} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command("git", append([]string{"-C", path}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v : %v\n%s", args, err, out)
+		}
+	}
+	return path
+}
+
+func toolOn(path string) obj {
+	return base("assistant", obj{"message": obj{"role": "assistant", "content": []any{
+		obj{"type": "tool_use", "id": "t", "name": "Read", "input": obj{"file_path": path}}}}})
+}
+
+func (f *fixture) repoNames(session string) string {
+	f.t.Helper()
+	rows, err := f.db.Query(`SELECT s.name FROM session_repos r JOIN subjects s ON s.uid = r.subject_uid
+		WHERE r.session_id = ? ORDER BY s.name`, session)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		rows.Scan(&n)
+		names = append(names, n)
+	}
+	return strings.Join(names, " ")
+}
+
+func TestSessionReposFromCwdAndTools(t *testing.T) {
+	f := newFixture(t)
+	dir := t.TempDir()
+	a := gitRepo(t, filepath.Join(dir, "a"), "git@example.org:o/alpha.git")
+	b := gitRepo(t, filepath.Join(dir, "b"), "git@example.org:o/beta.git")
+	plain := filepath.Join(dir, "plain")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(b, "main.go")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.transcript("-p", "s1", withCwd(user("un"), a), withCwd(toolOn(file), plain), withCwd(user("deux"), "relative/dir"))
+	if stats := f.all(); stats.Failed != 0 {
+		t.Fatalf("stats %+v", stats)
+	}
+	if got := f.repoNames("s"); got != "alpha beta" {
+		t.Fatalf("got %q", got)
+	}
+	f.all()
+	if f.count("SELECT count(*) FROM session_repos") != 2 {
+		t.Fatal("second pass duplicated rows")
+	}
+}
+
+func TestDeletedWorktreeIsSkipped(t *testing.T) {
+	f := newFixture(t)
+	gone := filepath.Join(t.TempDir(), "gone")
+	f.transcript("-p", "s1", withCwd(toolOn(filepath.Join(gone, "x.go")), gone))
+	stats := f.all()
+	if stats.Failed != 0 || stats.Messages != 1 || f.count("SELECT count(*) FROM session_repos") != 0 {
+		t.Fatalf("stats %+v", stats)
+	}
+}
+
+func TestJournalsDirIndexed(t *testing.T) {
+	f := newFixture(t)
+	a := gitRepo(t, filepath.Join(t.TempDir(), "a"), "git@example.org:o/alpha.git")
+	line := journalLine("1", "user", "bonjour")
+	line["cwd"] = a
+	f.journal(line)
+	if stats := f.all(); stats.Messages != 1 || stats.Failed != 0 {
+		t.Fatalf("stats %+v", stats)
+	}
+	if got := f.repoNames("vs"); got != "alpha" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestGitMissingDoesNotBlockIndexing(t *testing.T) {
+	f := newFixture(t)
+	a := gitRepo(t, filepath.Join(t.TempDir(), "a"), "git@example.org:o/alpha.git")
+	path := f.transcript("-p", "s1", withCwd(user("un"), a))
+	original := os.Getenv("PATH")
+	t.Setenv("PATH", t.TempDir())
+	stats := f.all()
+	if stats.Failed != 0 || stats.Messages != 1 || f.messages() != 1 {
+		t.Fatalf("stats %+v", stats)
+	}
+	if f.count("SELECT count(*) FROM session_repos") != 0 || f.offset(path) != 0 {
+		t.Fatal("discovery not left for the next pass")
+	}
+	t.Setenv("PATH", original)
+	if got := f.all(); got.Failed != 0 || got.Messages != 0 {
+		t.Fatalf("retry stats %+v", got)
+	}
+	if got := f.repoNames("s"); got != "alpha" || f.offset(path) == 0 {
+		t.Fatalf("retry found %q", got)
+	}
+}
+
+func TestRebuildKeepsStateAndRecomputesRepos(t *testing.T) {
+	f := newFixture(t)
+	a := gitRepo(t, filepath.Join(t.TempDir(), "a"), "git@example.org:o/alpha.git")
+	f.transcript("-p", "s1", withCwd(user("un"), a))
+	f.all()
+	subject := f.one("SELECT uid FROM subjects")
+	if err := db.RebuildIndex(f.db); err != nil {
+		t.Fatal(err)
+	}
+	if f.messages() != 0 || f.count("SELECT count(*) FROM session_repos") != 0 {
+		t.Fatal("index not emptied")
+	}
+	f.all()
+	if f.one("SELECT subject_uid FROM session_repos") != subject || f.count("SELECT count(*) FROM subjects") != 1 {
+		t.Fatal("repos differ after rebuild")
 	}
 }

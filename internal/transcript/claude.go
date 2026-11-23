@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/dlclark/regexp2"
+	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/mask"
 )
 
@@ -26,6 +28,7 @@ type Entry struct {
 	Key, SessionID, TS, Role string
 	Cwd, GitBranch           *string
 	Text                     string
+	Paths                    []string
 }
 
 type Title struct{ SessionID, Title string }
@@ -48,6 +51,7 @@ var (
 	commandArgs        = regexp.MustCompile(`(?s)<command-args>(.*?)</command-args>`)
 	notificationResult = regexp.MustCompile(`(?s)<result>(.*?)</result>`)
 	handBackReport     = regexp.MustCompile(`(?s)The report follows:(.*?)</agent-message>`)
+	shellDir           = regexp.MustCompile(`\A\s*(?:git\s+-C|cd)\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))`)
 	pastedContent      = regexp2.MustCompile(`<pasted_content id="([^"]*)">\n?(.*?)\n?</pasted_content id="\1">`, regexp2.Singleline)
 )
 
@@ -145,7 +149,7 @@ func normalizeTS(value string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	return moment.UTC().Format("2006-01-02T15:04:05.000Z"), true
+	return moment.UTC().Format(db.UTCFormat), true
 }
 
 func content(m map[string]any) any {
@@ -405,7 +409,9 @@ func toolUse(l line, block map[string]any, key string) []Item {
 	if detail != "" {
 		text = name + " " + detail
 	}
-	found := []Item{l.entry(RoleTool, text, key)}
+	entry := l.entry(RoleTool, text, key)
+	entry.Paths = toolPaths(name, block["input"])
+	found := []Item{entry}
 	if id, _ := str(block, "id"); id != "" {
 		for _, t := range agentTools {
 			if name == t {
@@ -415,3 +421,23 @@ func toolUse(l line, block map[string]any, key string) []Item {
 	}
 	return found
 }
+
+func toolPaths(name string, input any) []string {
+	in, _ := input.(map[string]any)
+	var found []string
+	for _, field := range []string{"file_path", "path", "notebook_path"} {
+		if p, _ := str(in, field); usable(p) {
+			found = append(found, p)
+		}
+	}
+	if command, _ := str(in, "command"); name == "Bash" {
+		if m := shellDir.FindStringSubmatch(command); m != nil {
+			if p := m[1] + m[2] + m[3]; usable(p) {
+				found = append(found, p)
+			}
+		}
+	}
+	return found
+}
+
+func usable(p string) bool { return filepath.IsAbs(p) && !strings.ContainsRune(p, 0) }

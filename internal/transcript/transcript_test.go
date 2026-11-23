@@ -499,3 +499,30 @@ func TestJournalRejectsInvalidLines(t *testing.T) {
 		}
 	}
 }
+
+func TestEntryPathsFromTools(t *testing.T) {
+	cases := []struct {
+		name  string
+		input obj
+		want  []string
+	}{
+		{"Read", obj{"file_path": "/x/a.go"}, []string{"/x/a.go"}},
+		{"Edit", obj{"file_path": "/x/b.go"}, []string{"/x/b.go"}},
+		{"Write", obj{"file_path": "/x/c.go"}, []string{"/x/c.go"}},
+		{"NotebookEdit", obj{"notebook_path": "/x/n.ipynb"}, []string{"/x/n.ipynb"}},
+		{"Grep", obj{"pattern": "p", "path": "/x/src"}, []string{"/x/src"}},
+		{"Bash", obj{"command": "git -C /x status"}, []string{"/x"}},
+		{"Bash", obj{"command": "cd /x && ls"}, []string{"/x"}},
+		{"Bash", obj{"command": `cd "/x y"; ls`}, []string{"/x y"}},
+		{"Bash", obj{"command": "ls /x"}, nil},
+		{"Read", obj{"file_path": "rel/a.go"}, nil},
+		{"Bash", obj{"command": "cd rel && ls"}, nil},
+		{"Read", obj{"file_path": "/x/a\x00b"}, nil},
+	}
+	for _, c := range cases {
+		got := entries(t, assistantLine([]any{toolUseBlock(c.name, c.input)}, nil), never)
+		if len(got) != 1 || !reflect.DeepEqual(got[0].Paths, c.want) {
+			t.Errorf("%s %v: got %v, want %v", c.name, c.input, got, c.want)
+		}
+	}
+}

@@ -18,10 +18,14 @@ import (
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/lock"
 	"github.com/jplot/brain/internal/paths"
+	"github.com/jplot/brain/internal/repo"
 	"github.com/jplot/brain/internal/transcript"
 )
 
-const busyTimeout = 30 * time.Second
+const (
+	busyTimeout = 30 * time.Second
+	gitBudget   = 5 * time.Second
+)
 
 var ctx = context.Background()
 
@@ -178,7 +182,8 @@ func indexFile(conn *sql.DB, name string, journal bool) (Stats, error) {
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return stats, err
 	}
-	r := &reader{tx: tx, name: name, journal: journal, forgotten: map[string]bool{}}
+	start := offset
+	r := &reader{tx: tx, name: name, journal: journal, forgotten: map[string]bool{}, touched: map[string]*touched{}}
 	if err := r.loadForgotten(); err != nil {
 		return stats, err
 	}
@@ -195,6 +200,12 @@ func indexFile(conn *sql.DB, name string, journal bool) (Stats, error) {
 		if err := r.line(raw, &stats); err != nil {
 			return Stats{}, err
 		}
+	}
+	// A git failure keeps the offset: the next pass reads the same lines again (messages are
+	// INSERT OR IGNORE) and retries the discovery, which has no other trace of those lines.
+	if err := r.discover(); err != nil {
+		log.Printf("découverte des dépôts reportée : %s (%T)", name, err)
+		offset = start
 	}
 	_, err = tx.Exec(`INSERT INTO files(path, offset, size) VALUES (?, ?, ?)
 		ON CONFLICT(path) DO UPDATE SET offset = excluded.offset, size = excluded.size`, name, offset, info.Size())
@@ -222,6 +233,78 @@ type reader struct {
 	name      string
 	journal   bool
 	forgotten map[string]bool
+	touched   map[string]*touched
+}
+
+type touched struct {
+	cwds, files []string
+	seen        map[string]bool
+}
+
+func (r *reader) touch(e transcript.Entry) {
+	t := r.touched[e.SessionID]
+	if t == nil {
+		t = &touched{seen: map[string]bool{}}
+		r.touched[e.SessionID] = t
+	}
+	add := func(list *[]string, p string) {
+		if filepath.IsAbs(p) && !t.seen[p] {
+			t.seen[p] = true
+			*list = append(*list, p)
+		}
+	}
+	if e.Cwd != nil {
+		add(&t.cwds, *e.Cwd)
+	}
+	for _, p := range e.Paths {
+		add(&t.files, p)
+	}
+}
+
+// The working directory goes first and every directory is looked up once per pass:
+// a session that edits 200 files of one repository costs one git lookup.
+func (r *reader) discover() error {
+	gitCtx, cancel := context.WithTimeout(ctx, gitBudget)
+	defer cancel()
+	looked := map[string]string{}
+	for session, t := range r.touched {
+		for _, p := range append(t.cwds, t.files...) {
+			dir, ok := existingDir(p)
+			if !ok {
+				continue
+			}
+			uid, done := looked[dir]
+			if !done {
+				var found bool
+				var err error
+				if uid, found, err = repo.Cached(gitCtx, r.tx, dir); err != nil {
+					return err
+				}
+				if !found {
+					uid = ""
+				}
+				looked[dir] = uid
+			}
+			if uid == "" {
+				continue
+			}
+			if _, err := r.tx.Exec("INSERT OR IGNORE INTO session_repos(session_id, subject_uid) VALUES (?, ?)", session, uid); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func existingDir(p string) (string, bool) {
+	info, err := os.Stat(p)
+	switch {
+	case err != nil:
+		return "", false
+	case info.IsDir():
+		return p, true
+	}
+	return filepath.Dir(p), true
 }
 
 func (r *reader) loadForgotten() error {
@@ -264,7 +347,7 @@ func (r *reader) parse(raw []byte) ([]transcript.Item, error) {
 	return parseClaude(raw, r.isAgentUse)
 }
 
-// A NUL cannot be part of a path, and git refuses it as an argument.
+// A NUL cannot be part of a path, and exec refuses it as an argument.
 func hasNulCwd(items []transcript.Item) bool {
 	for _, item := range items {
 		if e, ok := item.(transcript.Entry); ok && e.Cwd != nil && strings.ContainsRune(*e.Cwd, 0) {
@@ -301,6 +384,7 @@ func (r *reader) store(item transcript.Item, stats *Stats) error {
 }
 
 func (r *reader) entry(e transcript.Entry, stats *Stats) error {
+	r.touch(e)
 	res, err := r.tx.Exec(`INSERT OR IGNORE INTO messages(key, session_id, file, ts, role, git_branch, text)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`, e.Key, e.SessionID, r.name, e.TS, e.Role, e.GitBranch, e.Text)
 	if err != nil {
