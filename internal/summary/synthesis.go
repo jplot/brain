@@ -207,7 +207,8 @@ func synthesize(conn *sql.DB, user, subjectUID string, c *calls, now time.Time) 
 	return Outcome{Status: Synthesized, Points: len(cited), CostUSD: c.cost}, nil
 }
 
-// A point or child synthesis forgotten during the call leaves nothing written: the synthesis may quote it.
+// A point, child synthesis or previous synthesis forgotten during the call leaves nothing written: the
+// synthesis may quote it.
 func storeSynthesis(conn *sql.DB, subjectUID string, data synthesisInput, text string, cited []int64, at string) (written bool, err error) {
 	ids, children := make([]int64, len(data.points)), make([]string, len(data.children))
 	for i, p := range data.points {
@@ -224,14 +225,19 @@ func storeSynthesis(conn *sql.DB, subjectUID string, data synthesisInput, text s
 	if err != nil {
 		return false, err
 	}
+	want, previous := len(ids)+len(children), ""
+	if data.previous != "" {
+		want, previous = want+1, subjectUID
+	}
 	err = immediate(conn, func(c *sql.Conn) error {
 		var current int
 		if err := c.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM points WHERE id IN (SELECT value FROM json_each(?)))"+
-			" + (SELECT count(*) FROM syntheses WHERE stale = 0 AND subject_uid IN (SELECT value FROM json_each(?)))",
-			string(rawIDs), string(rawChildren)).Scan(&current); err != nil {
+			" + (SELECT count(*) FROM syntheses WHERE stale = 0 AND subject_uid IN (SELECT value FROM json_each(?)))"+
+			" + (SELECT count(*) FROM syntheses WHERE stale = 0 AND subject_uid = ?)",
+			string(rawIDs), string(rawChildren), previous).Scan(&current); err != nil {
 			return err
 		}
-		if current != len(ids)+len(children) {
+		if current != want {
 			return nil
 		}
 		var uids []string

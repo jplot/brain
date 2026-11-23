@@ -418,6 +418,32 @@ func TestSynthesisDroppedWhenChildPointForgottenDuringCall(t *testing.T) {
 	}
 }
 
+func TestSynthesisDroppedWhenPreviousStalesDuringCall(t *testing.T) {
+	f := newFixture(t)
+	points := f.backlog(f.home, 15)
+	Synthesize(f.db, camille, f.home, newModel(synthesisOf("Ancienne", points[0], points[1])).run, now0)
+	child, err := subjects.Create(f.db, "Sous-sujet", nil, &f.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPoint := f.subjectPoint(child, 3, t0)
+	run := func(prompt, system string, schema any) (Result, error) {
+		if !strings.Contains(prompt, "Synthèse précédente : Ancienne") {
+			t.Fatal("previous synthesis not given", prompt)
+		}
+		if err := memory.ForgetPoint(f.db, childPoint); err != nil {
+			t.Fatal(err)
+		}
+		return Result{Data: synthesisOf("Nouvelle", points[0], points[1])}, nil
+	}
+	if out := Synthesize(f.db, camille, f.home, run, now0); out.Status != Already {
+		t.Fatalf("%+v", out)
+	}
+	if r, _ := f.synthesis(f.home); r.text != "Ancienne" || r.stale != 1 {
+		t.Fatalf("%+v", r)
+	}
+}
+
 func TestSynthesisRunsWithSonnetMedium(t *testing.T) {
 	f := newFixture(t)
 	points := f.backlog(f.home, 15)
