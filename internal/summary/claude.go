@@ -13,6 +13,12 @@ import (
 
 const Timeout = 300 * time.Second
 
+const (
+	model = "haiku"
+	// Provisional: a paid comparison of low and medium on real sessions settles it.
+	effort = "medium"
+)
+
 // Replaced by tests, to see a call cut short without waiting 300 s.
 var timeout = Timeout
 
@@ -35,14 +41,20 @@ type Error struct {
 
 func (e *Error) Error() string { return e.msg }
 
-func RunClaude(prompt, system string, schema any) (Result, error) {
+func RunClaude(model, effort string) Runner {
+	return func(prompt, system string, schema any) (Result, error) {
+		return runClaude(model, effort, prompt, system, schema)
+	}
+}
+
+func runClaude(model, effort, prompt, system string, schema any) (Result, error) {
 	encoded, err := json.Marshal(schema)
 	if err != nil {
 		return Result{}, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "claude", "-p", "--safe-mode", "--model", "haiku", "--tools", "",
+	cmd := exec.CommandContext(ctx, "claude", "-p", "--safe-mode", "--model", model, "--effort", effort, "--tools", "",
 		"--no-session-persistence", "--output-format", "json", "--json-schema", string(encoded),
 		"--system-prompt", system)
 	cmd.Stdin = strings.NewReader(prompt)
