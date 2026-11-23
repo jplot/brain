@@ -15,7 +15,6 @@ import (
 
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/paths"
-	"github.com/jplot/brain/internal/search"
 	"github.com/jplot/brain/internal/subjects"
 )
 
@@ -726,7 +725,10 @@ func TestPointsBySubject(t *testing.T) {
 	equal(t, sorted(texts(f.visible(PointFilter{Subject: "maison"}))), []string{"routeur", "toit"})
 	equal(t, texts(f.visible(PointFilter{Subject: "RESEAU"})), []string{"routeur"})
 	equal(t, texts(f.visible(PointFilter{Subject: outil})), []string{"marteau"})
-	equal(t, texts(f.visible(PointFilter{Subject: "inconnu"})), []string{})
+	var unknown *subjects.ErrUnknownSubject
+	if _, err := VisiblePoints(f.db, PointFilter{Subject: "mason"}); !errors.As(err, &unknown) || unknown.Term != "mason" {
+		t.Fatalf("err %v", err)
+	}
 	got := f.visible(PointFilter{Subject: "outil"})[0]
 	if got.SubjectName == nil || *got.SubjectName != "Outil" || got.SubjectUID == nil || *got.SubjectUID != outil {
 		t.Fatalf("%+v", got)
@@ -740,7 +742,7 @@ func TestPointsAmbiguousSubject(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := VisiblePoints(f.db, PointFilter{Subject: "lune"})
-	var amb *search.ErrAmbiguousSubject
+	var amb *subjects.ErrAmbiguousSubject
 	if !errors.As(err, &amb) || len(amb.Candidates) != 2 {
 		t.Fatalf("err %v", err)
 	}

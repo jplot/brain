@@ -37,19 +37,6 @@ func (e *ErrAmbiguousSession) Error() string {
 	return fmt.Sprintf("début d'identifiant ambigu : %s (%s)", e.Ref, strings.Join(e.IDs, ", "))
 }
 
-type ErrAmbiguousSubject struct {
-	Term       string
-	Candidates []subjects.Subject
-}
-
-func (e *ErrAmbiguousSubject) Error() string {
-	names := make([]string, len(e.Candidates))
-	for i, c := range e.Candidates {
-		names[i] = c.Name + " " + c.UID
-	}
-	return fmt.Sprintf("plusieurs sujets portent ce nom : %s (%s)", e.Term, strings.Join(names, ", "))
-}
-
 type Segment struct {
 	Text  string
 	Match bool
@@ -117,28 +104,11 @@ func MatchAny(terms []string) string {
 	return strings.Join(quoted, " OR ")
 }
 
-// SubjectTree resolves a name, keyword or uid to that subject and its descendants.
-// An unknown term gives no uid, so a filter on it matches nothing.
-func SubjectTree(q db.Querier, term string) ([]string, error) {
-	found, err := subjects.FindByTerm(q, term)
-	if err != nil {
-		return nil, err
-	}
-	switch len(found) {
-	case 0:
-		return nil, nil
-	case 1:
-		below, err := subjects.Descendants(q, found[0].UID)
-		return append([]string{found[0].UID}, below...), err
-	}
-	return nil, &ErrAmbiguousSubject{Term: term, Candidates: found}
-}
-
 func about(q db.Querier, term string) (clause string, args []any, err error) {
 	if term == "" {
 		return "", nil, nil
 	}
-	tree, err := SubjectTree(q, term)
+	tree, err := subjects.TreeByTerm(q, term)
 	if err != nil {
 		return "", nil, err
 	}

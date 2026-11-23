@@ -16,6 +16,7 @@ import (
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/mask"
 	"github.com/jplot/brain/internal/search"
+	"github.com/jplot/brain/internal/subjects"
 )
 
 const (
@@ -118,7 +119,7 @@ func VisiblePoints(q db.Querier, f PointFilter) ([]Point, error) {
 		clauses = append(clauses, "p.superseded_by_uid IS NULL")
 	}
 	if f.Subject != "" {
-		tree, err := search.SubjectTree(q, f.Subject)
+		tree, err := subjects.TreeByTerm(q, f.Subject)
 		if err != nil {
 			return nil, err
 		}

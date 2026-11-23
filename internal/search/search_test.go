@@ -467,7 +467,20 @@ func TestSearchBySubjectIncludesDescendants(t *testing.T) {
 	same(t, sessions(Filter{Subject: "RESEAU"}), []string{"sess-B"})
 	same(t, sessions(Filter{Subject: outil}), []string{"sess-B"})
 	same(t, sessions(Filter{Subject: reseau}), []string{"sess-B"})
-	same(t, sessions(Filter{Subject: "inconnu"}), []string{})
+}
+
+func TestUnknownSubjectIsAnError(t *testing.T) {
+	w := newWorld(t)
+	w.aboutWorld()
+	var unknown *subjects.ErrUnknownSubject
+	for name, run := range map[string]func() error{
+		"search": func() error { _, err := Search(w.db, "mot", Filter{Subject: "mason"}); return err },
+		"list":   func() error { _, err := ListSessions(w.db, ListFilter{Subject: "mason"}); return err },
+	} {
+		if err := run(); !errors.As(err, &unknown) || unknown.Term != "mason" {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
 }
 
 func TestSearchAmbiguousSubject(t *testing.T) {
@@ -477,7 +490,7 @@ func TestSearchAmbiguousSubject(t *testing.T) {
 	if _, err := subjects.Create(w.db, "Satellite", []string{"lune"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	var amb *ErrAmbiguousSubject
+	var amb *subjects.ErrAmbiguousSubject
 	for name, run := range map[string]func() error{
 		"search": func() error { _, err := Search(w.db, "mot", Filter{Subject: "lune"}); return err },
 		"list":   func() error { _, err := ListSessions(w.db, ListFilter{Subject: "lune"}); return err },
@@ -509,7 +522,6 @@ func TestListBySubject(t *testing.T) {
 	w.aboutWorld()
 	same(t, ids(w.list(ListFilter{Subject: "maison"})), []string{"sess-A", "sess-B"})
 	same(t, ids(w.list(ListFilter{Subject: "outil"})), []string{"sess-B"})
-	same(t, ids(w.list(ListFilter{Subject: "inconnu"})), []string{})
 }
 
 func TestFilteredListPagesByLastMessage(t *testing.T) {

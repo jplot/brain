@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/jplot/brain/internal/db"
 )
@@ -18,6 +20,39 @@ var (
 	ErrSelfLink     = errors.New("un sujet ne se lie pas à lui-même")
 	ErrRemoveParent = errors.New("seul l'utilisateur retire un parent")
 )
+
+type ErrAmbiguousSubject struct {
+	Term       string
+	Candidates []Subject
+}
+
+func (e *ErrAmbiguousSubject) Error() string {
+	names := make([]string, len(e.Candidates))
+	for i, c := range e.Candidates {
+		names[i] = c.Name + " " + c.UID
+	}
+	return fmt.Sprintf("plusieurs sujets portent ce nom : %s (%s)", e.Term, strings.Join(names, ", "))
+}
+
+type ErrUnknownSubject struct{ Term string }
+
+func (e *ErrUnknownSubject) Error() string { return fmt.Sprintf("sujet inconnu : %s", e.Term) }
+
+// TreeByTerm resolves a name, keyword or uid to that subject and its descendants.
+func TreeByTerm(q db.Querier, term string) ([]string, error) {
+	found, err := FindByTerm(q, term)
+	if err != nil {
+		return nil, err
+	}
+	switch len(found) {
+	case 0:
+		return nil, &ErrUnknownSubject{Term: term}
+	case 1:
+		below, err := Descendants(q, found[0].UID)
+		return append([]string{found[0].UID}, below...), err
+	}
+	return nil, &ErrAmbiguousSubject{Term: term, Candidates: found}
+}
 
 type Origin struct {
 	User       bool
