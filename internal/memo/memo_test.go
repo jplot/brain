@@ -11,6 +11,7 @@ import (
 
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/paths"
+	"github.com/jplot/brain/internal/repo"
 	"github.com/jplot/brain/internal/subjects"
 )
 
@@ -266,6 +267,19 @@ func TestInjectNamedSubject(t *testing.T) {
 		t.Fatal("shown point not marked used")
 	}
 	t.Log(got)
+}
+
+func TestInjectRepoByItsFolderName(t *testing.T) {
+	f := newFixture(t)
+	uid, err := repo.Ensure(f.db, repo.Info{Identity: "github.com/exemple/verger-api", Name: "verger-api", Folder: "verger"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.point(uid, "decision", "les jetons expirent après une heure", 4, false)
+	got, _ := Inject(f.db, "sess", "on reprend le verger")
+	if !strings.Contains(got, "Sujet « verger-api »") {
+		t.Fatalf("got %q", got)
+	}
 }
 
 func TestInjectTwoWordName(t *testing.T) {

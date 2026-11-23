@@ -30,7 +30,7 @@ var (
 	pathPattern = regexp.MustCompile(`^[^\s/]+(/[^\s/]+)+$`)
 )
 
-type Info struct{ Identity, Name string }
+type Info struct{ Identity, Name, Folder string }
 
 func Normalize(remote string) (string, bool) {
 	s := strings.ToLower(strings.TrimSpace(remote))
@@ -80,7 +80,7 @@ func Of(ctx context.Context, path string) (Info, bool, error) {
 		return Info{}, false, err
 	}
 	if id, ok := Normalize(remote); ok {
-		return Info{Identity: id, Name: id[strings.LastIndex(id, "/")+1:]}, true, nil
+		return Info{Identity: id, Name: id[strings.LastIndex(id, "/")+1:], Folder: filepath.Base(main)}, true, nil
 	}
 	// The main repo's HEAD, not the worktree's (an orphan worktree has none);
 	// --all only when that HEAD is unborn, since an orphan ref such as gh-pages
@@ -92,7 +92,7 @@ func Of(ctx context.Context, path string) (Info, bool, error) {
 	if err != nil || !ok || roots == "" {
 		return Info{}, false, err
 	}
-	return Info{Identity: "commit:" + slices.Min(strings.Fields(roots)), Name: filepath.Base(main)}, true, nil
+	return Info{Identity: "commit:" + slices.Min(strings.Fields(roots)), Name: filepath.Base(main), Folder: filepath.Base(main)}, true, nil
 }
 
 // Exit 128 means not a repository (or no commits), 2 no such remote; any
@@ -108,6 +108,21 @@ func runGit(ctx context.Context, dir string, args ...string) (string, bool, erro
 		return "", false, nil
 	}
 	return "", false, fmt.Errorf("%w: git %s : %w", ErrGit, args[0], cmp.Or(ctx.Err(), err))
+}
+
+// Users call a repository by its folder, which may differ from its remote's name (verger
+// for verger-api): the main folder's name becomes an alias, unless another subject already
+// answers to it, which the alias would make ambiguous.
+func Ensure(q db.Querier, info Info) (string, error) {
+	uid, err := subjects.EnsureRepo(q, info.Identity, info.Name)
+	if err != nil {
+		return "", err
+	}
+	found, err := subjects.FindByTerm(q, info.Folder)
+	if err != nil || slices.ContainsFunc(found, func(s subjects.Subject) bool { return s.UID != uid }) {
+		return uid, err
+	}
+	return uid, subjects.AddAliases(q, uid, []string{info.Folder})
 }
 
 func Cached(ctx context.Context, q db.Querier, path string) (string, bool, error) {
@@ -132,7 +147,7 @@ func Cached(ctx context.Context, q db.Querier, path string) (string, bool, error
 	now := db.Stamp(time.Time{})
 	var found any
 	if ok {
-		subject, err := subjects.EnsureRepo(q, info.Identity, info.Name)
+		subject, err := Ensure(q, info)
 		if err != nil {
 			return "", false, err
 		}

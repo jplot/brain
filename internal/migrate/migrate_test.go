@@ -267,6 +267,38 @@ func TestMigrateProjectsBecomeSubjects(t *testing.T) {
 	}
 }
 
+func TestMigrateWorktreesAndFolderAliases(t *testing.T) {
+	f := newFixture(t)
+	repos := map[string]string{"jardinage": "potager", "atelier-bois": "atelier-bois"}
+	for folder, remote := range repos {
+		dir := filepath.Join(f.root, folder)
+		os.MkdirAll(dir, 0o755)
+		for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", "git@github.com:exemple/" + remote + ".git"}} {
+			if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v : %v\n%s", args, err, out)
+			}
+		}
+	}
+	worktrees := filepath.Join(f.root, "worktrees")
+	os.MkdirAll(filepath.Join(worktrees, "inconnu-x"), 0o755)
+	paths := map[int]string{30: worktrees, 31: filepath.Join(worktrees, "atelier-essai"), 32: filepath.Join(worktrees, "atelier-bois-v2", "src"),
+		33: filepath.Join(worktrees, "inconnu-x"), 34: filepath.Join(f.root, "jardinage")}
+	statements := f.sample()
+	for id, path := range paths {
+		statements = append(statements,
+			fmt.Sprintf(`INSERT INTO projects VALUES ('%s','%s','a_classer','regle')`, path, filepath.Base(path)),
+			fmt.Sprintf(`INSERT INTO points VALUES (%d,9,'fait','%s','point %d',3,'a','b',NULL,0)`, id, path, id))
+	}
+	f.build(statements...).Close()
+	f.migrate()
+	conn := f.open()
+	equal(t, column(t, conn, "SELECT p.id||' '||COALESCE(s.name,'-') FROM points p LEFT JOIN subjects s ON s.uid = p.subject_uid WHERE p.id >= 30 ORDER BY p.id"),
+		[]string{"30 -", "31 atelier", "32 atelier-bois", "33 -", "34 potager"})
+	equal(t, column(t, conn, "SELECT name||' '||aliases FROM subjects ORDER BY name"), []string{
+		"atelier []", "atelier-bois []", "jardin []", "potager [\"jardinage\"]",
+	})
+}
+
 func TestMigrateWarnsWhenRootAbsent(t *testing.T) {
 	f := newFixture(t)
 	f.build(f.sample()...).Close()

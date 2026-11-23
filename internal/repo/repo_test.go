@@ -14,6 +14,7 @@ import (
 
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/paths"
+	"github.com/jplot/brain/internal/subjects"
 )
 
 var bg = context.Background()
@@ -138,7 +139,7 @@ func TestNormalizeRemotes(t *testing.T) {
 func TestRemoteIdentityAndName(t *testing.T) {
 	repo := makeRepoWithRemote(t, filepath.Join(t.TempDir(), "atelier"), "git@github.com:Mon-Compte/Atelier.git")
 	info, ok, err := Of(bg, mkdir(t, filepath.Join(repo, "src")))
-	if err != nil || !ok || info != (Info{Identity: "github.com/mon-compte/atelier", Name: "atelier"}) {
+	if err != nil || !ok || info != (Info{Identity: "github.com/mon-compte/atelier", Name: "atelier", Folder: "atelier"}) {
 		t.Fatalf("%+v, %v, %v", info, ok, err)
 	}
 }
@@ -172,7 +173,7 @@ func TestWorktreeWithoutRemoteNamedAfterMainFolder(t *testing.T) {
 	wt := filepath.Join(t.TempDir(), "ailleurs")
 	git(t, repo, "worktree", "add", "-q", "-b", "autre", wt)
 	info, ok, err := Of(bg, wt)
-	if err != nil || !ok || info != (Info{Identity: "commit:" + sha, Name: "atelier"}) {
+	if err != nil || !ok || info != (Info{Identity: "commit:" + sha, Name: "atelier", Folder: "atelier"}) {
 		t.Fatalf("%+v, %v, %v", info, ok, err)
 	}
 }
@@ -183,7 +184,7 @@ func TestBareRepoWorktreeIsItsOwnRepo(t *testing.T) {
 	git(t, bare, "remote", "add", "origin", "git@github.com:mon-compte/outil.git")
 	wt := addWorktree(t, bare, filepath.Join(t.TempDir(), "outil-b"))
 	info, ok, err := Of(bg, wt)
-	if err != nil || !ok || info != (Info{Identity: "github.com/mon-compte/outil", Name: "outil"}) {
+	if err != nil || !ok || info != (Info{Identity: "github.com/mon-compte/outil", Name: "outil", Folder: "outil-b"}) {
 		t.Fatalf("%+v, %v, %v", info, ok, err)
 	}
 }
@@ -195,7 +196,7 @@ func TestSeparateGitDirIsItsOwnRepo(t *testing.T) {
 	git(t, super, "init", "-q", "--separate-git-dir="+filepath.Join(super, ".git", "modules", "sub"), sub)
 	sha := rootCommit(t, sub, "debut")
 	info, ok, err := Of(bg, sub)
-	if err != nil || !ok || info != (Info{Identity: "commit:" + sha, Name: "sub"}) {
+	if err != nil || !ok || info != (Info{Identity: "commit:" + sha, Name: "sub", Folder: "sub"}) {
 		t.Fatalf("%+v, %v, %v", info, ok, err)
 	}
 }
@@ -328,7 +329,7 @@ func TestOrphanWorktreeKeepsMainIdentity(t *testing.T) {
 	sha := rootCommit(t, repo, "debut")
 	wt := addWorktree(t, repo, filepath.Join(t.TempDir(), "orphelin"))
 	info, ok, err := Of(bg, wt)
-	if err != nil || !ok || info != (Info{Identity: "commit:" + sha, Name: "atelier"}) {
+	if err != nil || !ok || info != (Info{Identity: "commit:" + sha, Name: "atelier", Folder: "atelier"}) {
 		t.Fatalf("%+v, %v, %v", info, ok, err)
 	}
 }
@@ -410,6 +411,51 @@ func TestCachedCreatesSubjectOnce(t *testing.T) {
 	}
 	if n := count(t, d, "subjects"); n != 1 {
 		t.Fatalf("%d subjects", n)
+	}
+}
+
+func TestCachedAddsMainFolderAsAlias(t *testing.T) {
+	d := openDB(t)
+	repo := makeRepoWithRemote(t, filepath.Join(t.TempDir(), "verger"), "git@github.com:exemple/verger-api.git")
+	wt := addWorktree(t, repo, filepath.Join(t.TempDir(), "verger-feat-x"))
+	uid, ok, err := Cached(bg, d, wt)
+	if err != nil || !ok {
+		t.Fatalf("%v %v", ok, err)
+	}
+	var name, aliases, term string
+	if err := d.QueryRow("SELECT name, aliases FROM subjects WHERE uid = ?", uid).Scan(&name, &aliases); err != nil {
+		t.Fatal(err)
+	}
+	if name != "verger-api" || aliases != `["verger"]` {
+		t.Fatalf("%q %s", name, aliases)
+	}
+	if err := d.QueryRow("SELECT subject_uid FROM subject_terms WHERE term = 'verger'").Scan(&term); err != nil || term != uid {
+		t.Fatalf("term %q %v", term, err)
+	}
+	same := makeRepoWithRemote(t, filepath.Join(t.TempDir(), "Outil"), "git@github.com:exemple/outil.git")
+	uid, _, _ = Cached(bg, d, same)
+	d.QueryRow("SELECT aliases FROM subjects WHERE uid = ?", uid).Scan(&aliases)
+	expect(t, aliases, "[]")
+}
+
+func TestCachedSkipsFolderAliasOfAnotherSubject(t *testing.T) {
+	for _, other := range [][]string{{"Ruche"}, {"Apiculture", "ruche"}} {
+		d := openDB(t)
+		taken, err := subjects.Create(d, other[0], other[1:], nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		repo := makeRepoWithRemote(t, filepath.Join(t.TempDir(), "ruche"), "git@github.com:exemple/ruche-api.git")
+		uid, _, err := Cached(bg, d, repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var aliases, term string
+		d.QueryRow("SELECT aliases FROM subjects WHERE uid = ?", uid).Scan(&aliases)
+		expect(t, aliases, "[]")
+		if err := d.QueryRow("SELECT group_concat(subject_uid) FROM subject_terms WHERE term = 'ruche'").Scan(&term); err != nil || term != taken {
+			t.Fatalf("%v: term ruche → %q %v", other, term, err)
+		}
 	}
 }
 

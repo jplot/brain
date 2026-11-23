@@ -322,7 +322,8 @@ type mapper struct {
 	c    *counts
 }
 
-// subject is nil for the old projects root, which held what belonged to no project.
+// subject is nil for the old projects root, which held what belonged to no project, and for
+// what its worktrees folder holds without a repository.
 func (m *mapper) subject(path string) (*string, error) {
 	if uid, ok := m.uids[path]; ok {
 		return uid, nil
@@ -331,28 +332,61 @@ func (m *mapper) subject(path string) (*string, error) {
 	if path == m.root {
 		m.c.rootSeen = true
 	} else {
-		uid, err := m.resolve(path)
+		uid, ok, err := m.resolve(path)
 		if err != nil {
 			return nil, err
 		}
-		found = &uid
+		if ok {
+			found = &uid
+		}
 	}
 	m.uids[path] = found
 	return found, nil
 }
 
-func (m *mapper) resolve(path string) (string, error) {
+func (m *mapper) resolve(path string) (string, bool, error) {
+	info, ok, err := m.repoOf(path)
+	if err != nil || ok {
+		return m.ensure(info, ok, err)
+	}
+	rel, err := filepath.Rel(filepath.Join(m.root, "worktrees"), path)
+	if err != nil || !filepath.IsLocal(rel) {
+		uid, err := subjects.Create(m.to, filepath.Base(path), nil, nil)
+		return uid, err == nil, err
+	}
+	// The old version filed a deleted worktree under the project folder whose name is the
+	// longest prefix of the worktree's: atelier-bois-v2 belongs to atelier-bois, not atelier.
+	name := strings.Split(rel, string(filepath.Separator))[0]
+	entries, err := os.ReadDir(m.root)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", false, err
+	}
+	folder := ""
+	for _, e := range entries {
+		if d := e.Name(); e.IsDir() && d != "worktrees" && len(d) > len(folder) && (name == d || strings.HasPrefix(name, d+"-")) {
+			folder = d
+		}
+	}
+	if folder == "" {
+		return "", false, nil
+	}
+	return m.ensure(m.repoOf(filepath.Join(m.root, folder)))
+}
+
+func (m *mapper) repoOf(path string) (repo.Info, bool, error) {
 	info, ok, err := repo.Of(m.ctx, path)
 	if errors.Is(err, repo.ErrGit) {
-		return "", fmt.Errorf("git est nécessaire pour reconnaître les dépôts des anciens projets (%s) : %w", path, err)
+		return info, false, fmt.Errorf("git est nécessaire pour reconnaître les dépôts des anciens projets (%s) : %w", path, err)
 	}
-	if err != nil {
-		return "", err
+	return info, ok, err
+}
+
+func (m *mapper) ensure(info repo.Info, ok bool, err error) (string, bool, error) {
+	if err != nil || !ok {
+		return "", false, err
 	}
-	if ok {
-		return subjects.EnsureRepo(m.to, info.Identity, info.Name)
-	}
-	return subjects.Create(m.to, filepath.Base(path), nil, nil)
+	uid, err := repo.Ensure(m.to, info)
+	return uid, err == nil, err
 }
 
 func (m *mapper) projects(from *sql.Tx) error {
