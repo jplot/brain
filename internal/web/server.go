@@ -84,7 +84,7 @@ func serve(ctx context.Context, p paths.Paths, cwd string, open bool, out io.Wri
 	fmt.Fprintln(out, address)
 	if open {
 		if err := browser(address); err != nil {
-			log.Printf("web : navigateur non ouvert (%T)", err)
+			log.Printf("web: browser not opened (%T)", err)
 		}
 	}
 	h := &http.Server{Handler: s, ErrorLog: log.New(io.Discard, "", 0)}
@@ -148,11 +148,11 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	query, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil || !s.trusted(r, query) {
-		send(w, http.StatusForbidden, map[string]string{"error": "refusé"})
+		send(w, http.StatusForbidden, map[string]string{"error": "refused"})
 		return
 	}
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
-		send(w, http.StatusNotImplemented, map[string]string{"error": "requête refusée"})
+		send(w, http.StatusNotImplemented, map[string]string{"error": "request refused"})
 		return
 	}
 	if page, ok := pages[r.URL.Path]; ok && r.Method == http.MethodGet {
@@ -161,7 +161,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	name, handler, req := s.route(r.Method, r.URL.Path, query)
 	if handler == nil {
-		send(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
+		send(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
 	if r.Method == http.MethodPost {
@@ -174,7 +174,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status, message := classify(err)
 		if status == http.StatusInternalServerError {
-			log.Printf("web %s : %T", name, err)
+			log.Printf("web %s: %T", name, err)
 		}
 		send(w, status, map[string]string{"error": message})
 		return
@@ -192,7 +192,7 @@ func send(w http.ResponseWriter, status int, payload any) {
 func (s *server) page(w http.ResponseWriter, path, file, kind string) {
 	body, err := fs.ReadFile(s.static, file)
 	if err != nil {
-		send(w, http.StatusNotFound, map[string]string{"error": "introuvable"})
+		send(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
 	if path == "/" {
@@ -205,21 +205,21 @@ func (s *server) page(w http.ResponseWriter, path, file, kind string) {
 
 func readBody(r *http.Request) (map[string]json.RawMessage, error) {
 	if kind, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || kind != "application/json" {
-		return nil, fail(http.StatusUnsupportedMediaType, "JSON attendu")
+		return nil, fail(http.StatusUnsupportedMediaType, "JSON expected")
 	}
 	if r.ContentLength < 0 {
-		return nil, fail(http.StatusBadRequest, "longueur invalide")
+		return nil, fail(http.StatusBadRequest, "invalid length")
 	}
 	if r.ContentLength > maxBody {
-		return nil, fail(http.StatusRequestEntityTooLarge, "corps trop gros")
+		return nil, fail(http.StatusRequestEntityTooLarge, "body too large")
 	}
 	raw, err := io.ReadAll(r.Body)
 	if err != nil || !json.Valid(raw) {
-		return nil, fail(http.StatusBadRequest, "JSON invalide")
+		return nil, fail(http.StatusBadRequest, "invalid JSON")
 	}
 	var body map[string]json.RawMessage
 	if json.Unmarshal(raw, &body) != nil || body == nil {
-		return nil, fail(http.StatusBadRequest, "objet JSON attendu")
+		return nil, fail(http.StatusBadRequest, "JSON object expected")
 	}
 	return body, nil
 }

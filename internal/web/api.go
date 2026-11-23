@@ -94,7 +94,7 @@ func classify(err error) (int, string) {
 		errors.Is(err, subjects.ErrLinkType):
 		return http.StatusBadRequest, err.Error()
 	}
-	return http.StatusInternalServerError, "erreur interne"
+	return http.StatusInternalServerError, "internal error"
 }
 
 func (r *request) param(key string) (string, bool) {
@@ -112,7 +112,7 @@ func (r *request) bounded(key string, fallback, low, high int) (int, error) {
 	}
 	n, err := strconv.Atoi(value)
 	if !digits.MatchString(value) || err != nil || n < low || n > high {
-		return 0, fail(http.StatusBadRequest, key+" invalide")
+		return 0, fail(http.StatusBadRequest, key+" invalid")
 	}
 	return n, nil
 }
@@ -128,7 +128,7 @@ func (r *request) day(key string) (*time.Time, error) {
 	}
 	t, err := time.ParseInLocation("2006-01-02", value, time.Local)
 	if err != nil {
-		return nil, fail(http.StatusBadRequest, key+" invalide")
+		return nil, fail(http.StatusBadRequest, key+" invalid")
 	}
 	return &t, nil
 }
@@ -136,7 +136,7 @@ func (r *request) day(key string) (*time.Time, error) {
 func (r *request) text(key string) (string, error) {
 	var value *string
 	if raw, ok := r.body[key]; !ok || json.Unmarshal(raw, &value) != nil || value == nil {
-		return "", fail(http.StatusBadRequest, key+" manquant ou invalide")
+		return "", fail(http.StatusBadRequest, key+" missing or invalid")
 	}
 	return *value, nil
 }
@@ -144,7 +144,7 @@ func (r *request) text(key string) (string, error) {
 func (r *request) id() (int64, error) {
 	var id int64
 	if raw, ok := r.body["id"]; !ok || json.Unmarshal(raw, &id) != nil || id < 1 {
-		return 0, fail(http.StatusBadRequest, "id manquant ou invalide")
+		return 0, fail(http.StatusBadRequest, "id missing or invalid")
 	}
 	return id, nil
 }
@@ -287,7 +287,7 @@ func sessionView(s *server, r *request) (any, error) {
 		return nil, err
 	}
 	if row == nil {
-		return nil, fail(http.StatusNotFound, "session introuvable")
+		return nil, fail(http.StatusNotFound, "session not found")
 	}
 	decorated, err := s.decorate([]search.SessionRow{*row})
 	if err != nil {
@@ -365,7 +365,7 @@ func points(s *server, r *request) (any, error) {
 	filter := memory.PointFilter{Limit: allPoints}
 	kind, given := r.param("kind")
 	if given && !slices.Contains(kinds, kind) {
-		return nil, fail(http.StatusBadRequest, "kind invalide")
+		return nil, fail(http.StatusBadRequest, "invalid kind")
 	}
 	open, given := r.param("open")
 	if given && open != "1" {
@@ -535,16 +535,16 @@ func correct(s *server, r *request) (any, error) {
 	var importance *int
 	if raw, given := r.body["text"]; given {
 		if json.Unmarshal(raw, &text) != nil || text == nil || flat(*text) == "" || utf8.RuneCountInString(*text) > maxPointText {
-			return nil, fail(http.StatusBadRequest, "text doit être une chaîne de 1 à 2000 caractères")
+			return nil, fail(http.StatusBadRequest, "text must be a string of 1 to 2000 characters")
 		}
 	}
 	if raw, given := r.body["importance"]; given {
 		if json.Unmarshal(raw, &importance) != nil || importance == nil || *importance < 1 || *importance > 5 {
-			return nil, fail(http.StatusBadRequest, "importance doit être un entier de 1 à 5")
+			return nil, fail(http.StatusBadRequest, "importance must be an integer from 1 to 5")
 		}
 	}
 	if text == nil && importance == nil {
-		return nil, fail(http.StatusBadRequest, "rien à corriger")
+		return nil, fail(http.StatusBadRequest, "nothing to correct")
 	}
 	if err := memory.CorrectPoint(s.conn, id, text, importance); err != nil {
 		return nil, err
@@ -590,7 +590,7 @@ func forgetSession(s *server, r *request) (any, error) {
 			break
 		}
 		if time.Now().After(deadline) {
-			return nil, fail(http.StatusServiceUnavailable, "la mémoire est occupée, réessaie dans un instant")
+			return nil, fail(http.StatusServiceUnavailable, "memory is busy, try again in a moment")
 		}
 	}
 	id, err := search.ResolveSession(s.conn, ref)
@@ -598,7 +598,7 @@ func forgetSession(s *server, r *request) (any, error) {
 		return nil, err
 	}
 	if id == "" || id != ref {
-		return nil, fail(http.StatusNotFound, "session introuvable")
+		return nil, fail(http.StatusNotFound, "session not found")
 	}
 	if err := memory.ForgetSession(s.conn, s.p, id); err != nil {
 		return nil, err
@@ -644,7 +644,7 @@ func rename(s *server, r *request) (any, error) {
 	}
 	name := flat(mask.Text(v[1]))
 	if name == "" {
-		return nil, fail(http.StatusBadRequest, "name manquant ou invalide")
+		return nil, fail(http.StatusBadRequest, "name missing or invalid")
 	}
 	if err := s.atomically(func(q db.Querier) error { return renameUnique(q, v[0], name) }); err != nil {
 		return nil, err
@@ -666,7 +666,7 @@ func renameUnique(q db.Querier, uid, name string) error {
 	for _, other := range all {
 		if renamed.Kind == "subject" && other.Kind == "subject" && other.UID != uid &&
 			subjects.Normalize(other.Name) == subjects.Normalize(name) {
-			return fail(http.StatusConflict, "un autre sujet s'appelle déjà « "+other.Name+" » : pour les réunir, utilise « Fusionner »")
+			return fail(http.StatusConflict, "another subject is already named \""+other.Name+"\": to combine them, use \"Merge\"")
 		}
 	}
 	return subjects.Rename(q, uid, name)

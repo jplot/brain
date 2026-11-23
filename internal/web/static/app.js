@@ -3,15 +3,15 @@
 const TOKEN = new URLSearchParams(location.search).get("token") || "";
 const PAGE_SIZE = 20;
 const SEARCH_DELAY = 250;
-const LOCALE = "fr-FR";
-const ROLES = { user: "toi", claude: "Claude", tool: "outil", subagent: "sous-agent" };
+const LOCALE = "en-GB";
+const ROLES = { user: "you", claude: "Claude", tool: "tool", subagent: "subagent" };
 const VIEWS = [
-  ["fil", "Le fil"], ["souvenirs", "Les souvenirs"], ["recherche", "La recherche"],
-  ["memo", "Le mémo"], ["sujets", "Les sujets"],
+  ["fil", "Feed"], ["souvenirs", "Memories"], ["recherche", "Search"],
+  ["memo", "Memo"], ["sujets", "Subjects"],
 ];
-const KIND_TABS = [["all", "Tout"], ["decision", "Décisions"], ["pending", "En suspens"], ["fact", "Faits sur toi"]];
-const KINDS = { topic: "Thème", decision: "Décision", pending: "En suspens", fact: "Fait sur toi" };
-const LINKS = { depends_on: "dépend de", about: "concerne" };
+const KIND_TABS = [["all", "All"], ["decision", "Decisions"], ["pending", "Pending"], ["fact", "Facts about you"]];
+const KINDS = { topic: "Topic", decision: "Decision", pending: "Pending", fact: "Fact about you" };
+const LINKS = { depends_on: "depends on", about: "concerns" };
 const LEVELS = [1, 2, 3, 4, 5];
 const MEMORY_PAGE = 50;
 
@@ -43,10 +43,10 @@ async function call(path, options) {
   try {
     response = await fetch(path, options);
   } catch {
-    throw new Error("Le serveur ne répond pas.");
+    throw new Error("The server is not responding.");
   }
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw Object.assign(new Error(body.error || "requête refusée"), { status: response.status });
+  if (!response.ok) throw Object.assign(new Error(body.error || "request refused"), { status: response.status });
   return body;
 }
 
@@ -105,8 +105,8 @@ function clock(date) {
   return date.toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit" });
 }
 
-function plural(n, word) {
-  return `${n} ${word}${n > 1 ? "s" : ""}`;
+function plural(n, word, many = `${word}s`) {
+  return `${n} ${n > 1 ? many : word}`;
 }
 
 function pillRow(items, current, pick, prefix) {
@@ -140,10 +140,10 @@ function subjectOptions(subjects, current, first) {
 }
 
 function subjectFilter() {
-  return h("label", { class: "field" }, "Sujet", h("select", {
+  return h("label", { class: "field" }, "Subject", h("select", {
     "data-key": "subject-filter",
     onchange: (event) => { state.subject = event.target.value; state.focus = null; show(); },
-  }, subjectOptions(state.subjects, state.subject, "Tous les sujets")));
+  }, subjectOptions(state.subjects, state.subject, "All subjects")));
 }
 
 async function refreshCounts() {
@@ -188,8 +188,8 @@ function forgetControl(askLabel, question, run) {
   function ask() {
     box.replaceChildren(
       h("span", { class: "confirm" }, question),
-      h("button", { type: "button", class: "btn strong", onclick: confirm }, "Oublier"),
-      h("button", { type: "button", class: "btn", onclick: idle }, "Annuler"));
+      h("button", { type: "button", class: "btn strong", onclick: confirm }, "Forget"),
+      h("button", { type: "button", class: "btn", onclick: idle }, "Cancel"));
   }
   function idle() {
     box.replaceChildren(h("button", { type: "button", class: "btn", onclick: ask }, askLabel));
@@ -199,7 +199,7 @@ function forgetControl(askLabel, question, run) {
     try {
       await run();
     } catch (error) {
-      say(alert, `Oubli refusé : ${error.message}`);
+      say(alert, `Forgetting refused: ${error.message}`);
     }
   }
   idle();
@@ -208,8 +208,8 @@ function forgetControl(askLabel, question, run) {
 
 function countsText(row) {
   const parts = [];
-  if (row.decisions) parts.push(plural(row.decisions, "décision"));
-  if (row.pending) parts.push(`${row.pending} ${row.pending > 1 ? "points" : "point"} en suspens`);
+  if (row.decisions) parts.push(plural(row.decisions, "decision"));
+  if (row.pending) parts.push(`${row.pending} pending ${row.pending > 1 ? "points" : "point"}`);
   return parts.length ? parts.join(", ") : plural(row.n_messages, "message");
 }
 
@@ -219,19 +219,19 @@ function sessionCard(row, startOpen, gone) {
   const toggle = h("button", { type: "button", class: "session-toggle", "aria-expanded": "false" },
     h("span", { class: "line" },
       h("span", { class: "time" }, clock(ended)),
-      h("span", { class: "title" }, row.episode_title ?? row.title ?? "(sans titre)"),
+      h("span", { class: "title" }, row.episode_title ?? row.title ?? "(untitled)"),
       row.subjects.length ? h("span", { class: "subjects" }, row.subjects.join(", ")) : null),
     row.summary ? h("span", { class: "summary" }, row.summary) : null,
     h("span", { class: "sub" }, countsText(row)));
   const card = h("article", { class: "card" }, toggle);
   async function open() {
-    const mine = body = h("div", { class: "messages" }, h("span", { class: "sub" }, "Chargement…"));
+    const mine = body = h("div", { class: "messages" }, h("span", { class: "sub" }, "Loading…"));
     card.append(mine);
     toggle.setAttribute("aria-expanded", "true");
     try {
       const session = await get(`/api/sessions/${encodeURIComponent(row.id)}`);
       mine.replaceChildren(...session.messages.map(messageRow), forgetControl(
-        "Oublier cette session", "Oublier toute cette session ? C’est définitif.", async () => {
+        "Forget this session", "Forget this whole session? This is permanent.", async () => {
           try {
             await post("/api/sessions/forget", { id: row.id });
           } catch (error) {
@@ -244,7 +244,7 @@ function sessionCard(row, startOpen, gone) {
           refreshCounts();
         }));
     } catch {
-      mine.replaceChildren(h("span", { class: "alert", role: "alert" }, "Impossible de charger la session."));
+      mine.replaceChildren(h("span", { class: "alert", role: "alert" }, "Could not load the session."));
     }
   }
   toggle.addEventListener("click", () => {
@@ -266,7 +266,7 @@ function showFil(mine) {
   const more = h("div", { class: "more" });
   const focusAlert = alertBox("");
   const pinned = h("div", { class: "pinned" });
-  mount(...heading("Le fil", "Tes sessions par date, avec les sujets dont elles parlent."), subjectFilter(), alert,
+  mount(...heading("Feed", "Your sessions by date, with the subjects they talk about."), subjectFilter(), alert,
     focusAlert, pinned, days, more);
 
   function drop(card) {
@@ -277,7 +277,7 @@ function showFil(mine) {
       list.remove();
       if (current && current.list === list) current = null;
     }
-    if (!days.children.length && !pinned.children.length) days.append(h("p", { class: "empty" }, "Aucune session."));
+    if (!days.children.length && !pinned.children.length) days.append(h("p", { class: "empty" }, "No sessions."));
   }
   let before = null;
   let current = null;
@@ -301,7 +301,7 @@ function showFil(mine) {
     try {
       rows = await get("/api/sessions", params);
     } catch {
-      if (mine === epoch) say(alert, "Impossible de charger les sessions.");
+      if (mine === epoch) say(alert, "Could not load the sessions.");
       return;
     }
     if (mine !== epoch) return;
@@ -316,10 +316,10 @@ function showFil(mine) {
       }
       current.list.append(sessionCard(row, false, drop));
     }
-    if (!before && rows.length === 0) days.append(h("p", { class: "empty" }, "Aucune session."));
+    if (!before && rows.length === 0) days.append(h("p", { class: "empty" }, "No sessions."));
     if (rows.length) before = rows[rows.length - 1].ended_at;
     more.replaceChildren(...(rows.length >= PAGE_SIZE ? [
-      h("button", { type: "button", class: "btn", "data-key": "more", onclick: load }, "Voir plus"),
+      h("button", { type: "button", class: "btn", "data-key": "more", onclick: load }, "Show more"),
     ] : []));
   }
   async function showFocus() {
@@ -329,7 +329,7 @@ function showFil(mine) {
     } catch (error) {
       state.focus = null;
       if (mine === epoch) {
-        say(focusAlert, error.status === 404 ? "Cette conversation n’existe plus." : "Impossible de charger la conversation.");
+        say(focusAlert, error.status === 404 ? "This conversation no longer exists." : "Could not load the conversation.");
       }
     }
   }
@@ -344,7 +344,7 @@ function memoryDate(point) {
 function pointCard(point, refresh, gone) {
   const editing = !!memoryUi.editing[point.id];
   const closed = point.closed_at !== null;
-  const status = closed ? "Fermé" : point.corrected ? "Corrigé par toi" : "";
+  const status = closed ? "Closed" : point.corrected ? "Corrected by you" : "";
   const levels = LEVELS.map((n) => h("button", {
     type: "button", class: "pill level", "aria-pressed": String(point.importance === n),
     "aria-label": `Importance ${n}`, "data-key": `level-${point.id}-${n}`,
@@ -352,7 +352,7 @@ function pointCard(point, refresh, gone) {
       : change(() => post("/api/points/correct", { id: point.id, importance: n }), refresh)),
   }, String(n)));
   const text = editing
-    ? h("label", { class: "edit-field" }, "Texte du souvenir", h("input", {
+    ? h("label", { class: "edit-field" }, "Memory text", h("input", {
       type: "text", value: memoryUi.draft[point.id] ?? point.text, "data-key": `text-${point.id}`,
       oninput: (event) => { memoryUi.draft[point.id] = event.target.value; },
     }))
@@ -365,7 +365,7 @@ function pointCard(point, refresh, gone) {
       delete memoryUi.editing[point.id];
       delete memoryUi.draft[point.id];
     }, refresh) : (memoryUi.editing[point.id] = true, refresh())),
-  }, editing ? "Terminer" : "Corriger");
+  }, editing ? "Done" : "Correct");
   const card = h("article", { class: closed ? "card memory closed" : "card memory" },
     h("div", { class: "hit-head" },
       h("span", { class: "kind" }, KINDS[point.kind] || point.kind),
@@ -378,12 +378,12 @@ function pointCard(point, refresh, gone) {
       point.kind === "pending" && !closed ? h("button", {
         type: "button", class: "btn", "data-key": `close-${point.id}`,
         onclick: () => change(() => post("/api/points/close", { id: point.id }), refresh),
-      }, "Fermer le point") : null,
+      }, "Close the point") : null,
       h("button", {
         type: "button", class: "btn link", "data-key": `conversation-${point.id}`,
         onclick: () => { state.focus = point.session_id; state.view = "fil"; state.subject = ""; show(); },
-      }, "Voir la conversation"),
-      forgetControl("Oublier", "Définitif.", async () => {
+      }, "View the conversation"),
+      forgetControl("Forget", "Permanent.", async () => {
         try {
           await post("/api/points/forget", { id: point.id });
         } catch (error) {
@@ -402,8 +402,8 @@ async function showMemories(mine) {
   const total = h("div", { class: "result-count" });
   const list = h("div", { class: "stack" });
   const more = h("div", { class: "more" });
-  mount(...heading("Les souvenirs",
-    "Ce que les résumés ont retenu. Une correction de ta part n’est jamais réécrite."),
+  mount(...heading("Memories",
+    "What the summaries kept. A correction from you is never rewritten."),
   pillRow(KIND_TABS, state.kind, (kind) => { state.kind = kind; show(); }, "kind"), subjectFilter(), alert, total,
   list, more);
   let shown = 0;
@@ -417,9 +417,9 @@ async function showMemories(mine) {
   }
 
   function footer() {
-    total.textContent = count ? plural(count, "souvenir") : "";
+    total.textContent = count ? plural(count, "memory", "memories") : "";
     more.replaceChildren(...(shown < count ? [
-      h("button", { type: "button", class: "btn", "data-key": "more", onclick: loadMore }, "Voir plus"),
+      h("button", { type: "button", class: "btn", "data-key": "more", onclick: loadMore }, "Show more"),
     ] : []));
   }
 
@@ -427,7 +427,7 @@ async function showMemories(mine) {
     card.remove();
     shown -= 1;
     count -= 1;
-    if (!list.children.length) list.append(h("p", { class: "empty" }, "Aucun souvenir."));
+    if (!list.children.length) list.append(h("p", { class: "empty" }, "No memories."));
     footer();
   }
 
@@ -448,7 +448,7 @@ async function showMemories(mine) {
     try {
       page = await fetchPage(shown, MEMORY_PAGE);
     } catch {
-      if (mine === epoch) say(alert, "Impossible de charger les souvenirs.");
+      if (mine === epoch) say(alert, "Could not load the memories.");
       return;
     }
     if (mine !== epoch) return;
@@ -470,7 +470,7 @@ async function showMemories(mine) {
       } while (found.length < wanted && found.length < page.total);
       count = page.total;
     } catch {
-      if (mine === epoch) say(alert, message ? `${message} Impossible de charger les souvenirs.` : "Impossible de charger les souvenirs.");
+      if (mine === epoch) say(alert, message ? `${message} Could not load the memories.` : "Could not load the memories.");
       return;
     }
     if (mine !== epoch) return;
@@ -478,7 +478,7 @@ async function showMemories(mine) {
     shown = found.length;
     replaceKeepingFocus(list, ...(found.length
       ? found.map((point) => pointCard(point, refresh, gone))
-      : [h("p", { class: "empty" }, "Aucun souvenir.")]));
+      : [h("p", { class: "empty" }, "No memories.")]));
     footer();
   }
   await refresh("");
@@ -486,15 +486,15 @@ async function showMemories(mine) {
 
 async function showMemo(mine) {
   const alert = alertBox(state.notice);
-  const empty = h("p", { class: "empty" }, "Rien à retenir ici : Claude ne recevrait aucun mémo.");
+  const empty = h("p", { class: "empty" }, "Nothing to remember here: Claude would receive no memo.");
   const memo = h("pre", { class: "memo" });
   empty.hidden = true;
   memo.hidden = true;
   const select = h("select", { "data-key": "memo-subject", onchange: (event) => pick(event.target.value) },
-    subjectOptions(state.subjects, state.memoSubject, "Démarrage dans ce dossier"));
-  mount(...heading("Le mémo",
-    "Ce que Claude reçoit au démarrage d’une session dans le dossier où paul web a été lancé. Pour un sujet : l’index montré quand un message le nomme ; les points retenus peuvent alors différer, car ils suivent les mots du message."),
-  h("label", { class: "field" }, "Mémo de", select), alert, empty, memo);
+    subjectOptions(state.subjects, state.memoSubject, "Start in this directory"));
+  mount(...heading("Memo",
+    "What Claude receives when a session starts in the directory where paul web was launched. For a subject: the index shown when a message names it; the points kept may then differ, since they follow the words of the message."),
+  h("label", { class: "field" }, "Memo for", select), alert, empty, memo);
 
   async function pick(uid) {
     state.memoSubject = uid;
@@ -505,7 +505,7 @@ async function showMemo(mine) {
     try {
       result = await get("/api/memo", uid ? { subject: uid } : {});
     } catch {
-      if (mine === epoch && uid === state.memoSubject) say(alert, "Impossible de charger le mémo.");
+      if (mine === epoch && uid === state.memoSubject) say(alert, "Could not load the memo.");
       return;
     }
     if (mine !== epoch || uid !== state.memoSubject) return;
@@ -542,7 +542,7 @@ function showSearch(mine) {
     const ticket = ++searchSeq;
     results.replaceChildren();
     if (!text) {
-      count.textContent = "Tape un mot pour chercher.";
+      count.textContent = "Type a word to search.";
       say(alert, "");
       return;
     }
@@ -554,13 +554,13 @@ function showSearch(mine) {
     } catch {
       if (mine === epoch && ticket === searchSeq) {
         count.textContent = "";
-        say(alert, "Impossible de lancer la recherche.");
+        say(alert, "Could not run the search.");
       }
       return;
     }
     if (mine !== epoch || ticket !== searchSeq || text !== state.query.trim()) return;
     say(alert, "");
-    count.textContent = hits.length === 0 ? "Aucun résultat." : plural(hits.length, "résultat");
+    count.textContent = hits.length === 0 ? "No results." : plural(hits.length, "result");
     results.replaceChildren(...hits.map(hitCard));
   }
 
@@ -570,8 +570,8 @@ function showSearch(mine) {
     typing = setTimeout(run, SEARCH_DELAY);
   });
   mount(
-    ...heading("La recherche", "Couvre toutes tes sessions : c’est toi qui regardes."),
-    h("label", { class: "search-field" }, "Chercher", input),
+    ...heading("Search", "Covers all your sessions: you are the one looking."),
+    h("label", { class: "search-field" }, "Search for", input),
     subjectFilter(), alert, count, results);
   clearTimeout(typing);
   run();
@@ -582,7 +582,7 @@ async function change(action, refresh) {
   try {
     await action();
   } catch (error) {
-    message = `Changement refusé : ${error.message}`;
+    message = `Change refused: ${error.message}`;
   }
   await refresh(message);
 }
@@ -591,7 +591,7 @@ function subjectPanel(node, panel, refresh, redraw) {
   const uid = node.uid;
   const others = state.subjects.filter((s) => s.uid !== uid);
   const close = () => { delete subjectUi.open[uid]; delete subjectUi.draft[uid]; };
-  const cancel = h("button", { type: "button", class: "btn", onclick: () => { close(); redraw(); } }, "Annuler");
+  const cancel = h("button", { type: "button", class: "btn", onclick: () => { close(); redraw(); } }, "Cancel");
   const run = (label, strong, send) => h("button", {
     type: "button", class: strong ? "btn strong" : "btn", "data-key": `${panel}-confirm-${uid}`,
     onclick: (event) => {
@@ -604,30 +604,30 @@ function subjectPanel(node, panel, refresh, redraw) {
       type: "text", value: subjectUi.draft[uid] ?? node.name, "data-key": `name-${uid}`,
       oninput: (event) => { subjectUi.draft[uid] = event.target.value; },
     });
-    return h("div", { class: "panel" }, h("label", { class: "field" }, "Nouveau nom", input),
-      h("div", { class: "actions" }, run("Enregistrer", true, () => post("/api/subjects/rename", { uid, name: input.value })), cancel));
+    return h("div", { class: "panel" }, h("label", { class: "field" }, "New name", input),
+      h("div", { class: "actions" }, run("Save", true, () => post("/api/subjects/rename", { uid, name: input.value })), cancel));
   }
   if (panel === "move") {
     const below = new Set(flatten(node.children, 0, []).map((s) => s.uid));
     const select = h("select", { "data-key": `parent-${uid}` },
-      subjectOptions(others.filter((s) => !below.has(s.uid)), node.parent_uid ?? "", "Aucun : à la racine"));
-    return h("div", { class: "panel" }, h("label", { class: "field" }, "Placer sous", select),
-      h("div", { class: "actions" }, run("Déplacer ici", true, () => post("/api/subjects/parent", { uid, parent: select.value })), cancel));
+      subjectOptions(others.filter((s) => !below.has(s.uid)), node.parent_uid ?? "", "None: at the root"));
+    return h("div", { class: "panel" }, h("label", { class: "field" }, "Place under", select),
+      h("div", { class: "actions" }, run("Move here", true, () => post("/api/subjects/parent", { uid, parent: select.value })), cancel));
   }
   if (panel === "merge") {
     const select = h("select", { "data-key": `into-${uid}` }, subjectOptions(others, "", null));
-    return h("div", { class: "panel" }, h("label", { class: "field" }, "Fusionner dans", select),
-      h("p", { class: "sub" }, `« ${node.name} » devient un mot-clé du sujet choisi, qui reçoit ses souvenirs, ses sessions et ses liens. C’est définitif.`),
-      h("div", { class: "actions" }, run("Confirmer la fusion", true, () => post("/api/subjects/merge", { from: uid, into: select.value })), cancel));
+    return h("div", { class: "panel" }, h("label", { class: "field" }, "Merge into", select),
+      h("p", { class: "sub" }, `"${node.name}" becomes a keyword of the chosen subject, which receives its memories, sessions and links. This is permanent.`),
+      h("div", { class: "actions" }, run("Confirm the merge", true, () => post("/api/subjects/merge", { from: uid, into: select.value })), cancel));
   }
   const type = h("select", { "data-key": `link-type-${uid}` },
     Object.entries(LINKS).map(([value, text]) => h("option", { value }, text)));
   const target = h("select", { "data-key": `link-target-${uid}` }, subjectOptions(others, "", null));
-  return h("div", { class: "panel" }, h("label", { class: "field" }, "Lien", type), h("label", { class: "field" }, "Vers", target),
-    h("div", { class: "actions" }, run("Ajouter le lien", true, () => post("/api/subjects/link", { source: uid, type: type.value, target: target.value })), cancel));
+  return h("div", { class: "panel" }, h("label", { class: "field" }, "Link", type), h("label", { class: "field" }, "To", target),
+    h("div", { class: "actions" }, run("Add the link", true, () => post("/api/subjects/link", { source: uid, type: type.value, target: target.value })), cancel));
 }
 
-const SUBJECT_ACTIONS = [["rename", "Renommer"], ["move", "Déplacer"], ["merge", "Fusionner"], ["link", "Lier"]];
+const SUBJECT_ACTIONS = [["rename", "Rename"], ["move", "Move"], ["merge", "Merge"], ["link", "Link"]];
 
 function subjectCard(node, refresh, redraw) {
   const uid = node.uid;
@@ -639,21 +639,21 @@ function subjectCard(node, refresh, redraw) {
   return h("article", { class: "card subject", "aria-label": node.name },
     h("div", { class: "hit-head" },
       h("span", { class: "subject-name" }, node.name),
-      node.kind === "repo" ? h("span", { class: "badge" }, "dépôt") : null,
-      h("span", {}, plural(node.points, "souvenir"))),
-    node.aliases.length ? h("div", { class: "sub" }, `Mots-clés : ${node.aliases.join(", ")}`) : null,
+      node.kind === "repo" ? h("span", { class: "badge" }, "repository") : null,
+      h("span", {}, plural(node.points, "memory", "memories"))),
+    node.aliases.length ? h("div", { class: "sub" }, `Keywords: ${node.aliases.join(", ")}`) : null,
     node.synthesis ? h("p", { class: "synthesis" }, node.synthesis) : null,
     node.links.length ? h("ul", { class: "links" }, node.links.map((l) => h("li", {},
       h("span", {}, `${LINKS[l.type] || l.type} ${l.target_name || l.target}`),
       h("button", {
-        type: "button", class: "btn", "aria-label": `Retirer le lien vers ${l.target_name || l.target}`,
+        type: "button", class: "btn", "aria-label": `Remove the link to ${l.target_name || l.target}`,
         "data-key": `unlink-${uid}-${l.type}-${l.target}`,
         onclick: () => change(() => post("/api/subjects/unlink", { source: uid, type: l.type, target: l.target }), refresh),
-      }, "Retirer")))) : null,
+      }, "Remove")))) : null,
     h("div", { class: "actions" }, actions, h("button", {
       type: "button", class: "btn link", "data-key": `memories-${uid}`,
       onclick: () => { state.subject = uid; state.view = "souvenirs"; show(); },
-    }, "Voir les souvenirs")),
+    }, "View the memories")),
     open ? subjectPanel(node, open, refresh, redraw) : null);
 }
 
@@ -665,15 +665,15 @@ function subjectNode(node, refresh, redraw) {
 async function showSubjects(mine) {
   const alert = alertBox(state.notice);
   const list = h("div", { class: "tree" });
-  mount(...heading("Les sujets",
-    "L’arbre de ce dont parlent tes sessions, avec leurs liens. Ce que tu changes ici, le résumeur ne le défait pas."),
+  mount(...heading("Subjects",
+    "The tree of what your sessions talk about, with their links. What you change here, the summarizer does not undo."),
   alert, list);
   let known = null;
 
   function redraw() {
     replaceKeepingFocus(list, ...(known.length
       ? known.map((node) => subjectNode(node, refresh, redraw))
-      : [h("p", { class: "empty" }, "Aucun sujet.")]));
+      : [h("p", { class: "empty" }, "No subjects.")]));
   }
 
   async function refresh(message) {
@@ -681,7 +681,7 @@ async function showSubjects(mine) {
       await loadSubjects();
     } catch {
       if (mine !== epoch) return;
-      const failure = "Impossible de charger les sujets.";
+      const failure = "Could not load the subjects.";
       say(alert, message ? `${message} ${failure}` : failure);
       if (known) redraw();
       return;
@@ -700,7 +700,7 @@ async function boot() {
   try {
     await get("/api/refresh");
   } catch {
-    state.notice = "L’index n’a pas pu être mis à jour.";
+    state.notice = "The index could not be updated.";
   }
   try {
     await loadSubjects();

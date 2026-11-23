@@ -379,7 +379,7 @@ func (f *fixture) postRaw(path string, raw []byte, contentType string) answer {
 func (f *fixture) status(t *testing.T, a answer, want int) {
 	t.Helper()
 	if a.status != want {
-		t.Fatalf("statut %d, attendu %d : %s", a.status, want, a.body)
+		t.Fatalf("status %d, want %d: %s", a.status, want, a.body)
 	}
 }
 
@@ -410,7 +410,7 @@ func (f *fixture) sessionRow(id string) map[string]any {
 			return r
 		}
 	}
-	f.t.Fatalf("session %s absente", id)
+	f.t.Fatalf("session %s missing", id)
 	return nil
 }
 
@@ -443,7 +443,7 @@ func pointByID(t *testing.T, rows []map[string]any, id int64) map[string]any {
 			return r
 		}
 	}
-	t.Fatalf("point %d absent", id)
+	t.Fatalf("point %d missing", id)
 	return nil
 }
 
@@ -466,7 +466,7 @@ func TestMissingOrWrongTokenIs403(t *testing.T) {
 	for _, token := range []string{"", "mauvais", "%C3%A9"} {
 		a := f.do(call{method: "GET", path: "/api/subjects", token: ptr(token)})
 		f.status(t, a, 403)
-		if string(a.body) != `{"error":"refusé"}` {
+		if string(a.body) != `{"error":"refused"}` {
 			t.Fatalf("%s", a.body)
 		}
 	}
@@ -578,7 +578,7 @@ func TestUnhandledMethodsCheckedBefore501(t *testing.T) {
 			t.Fatalf("%q", a.body)
 		}
 	}
-	if a := f.do(call{method: "DELETE", path: "/"}); string(a.body) != `{"error":"requête refusée"}` {
+	if a := f.do(call{method: "DELETE", path: "/"}); string(a.body) != `{"error":"request refused"}` {
 		t.Fatalf("%s", a.body)
 	}
 }
@@ -602,7 +602,7 @@ func TestInternalErrorIs500WithoutLeak(t *testing.T) {
 	}
 	a := f.get("/api/refresh?secret=graine-secrete")
 	f.status(t, a, 500)
-	if string(a.body) != `{"error":"erreur interne"}` {
+	if string(a.body) != `{"error":"internal error"}` {
 		t.Fatalf("%s", a.body)
 	}
 	text := logged.String()
@@ -611,7 +611,7 @@ func TestInternalErrorIs500WithoutLeak(t *testing.T) {
 	}
 	for _, leak := range []string{f.p.Home, "graine-secrete", f.s.token} {
 		if strings.Contains(text, leak) {
-			t.Fatalf("%q dans %q", leak, text)
+			t.Fatalf("%q in %q", leak, text)
 		}
 	}
 }
@@ -660,7 +660,7 @@ func TestConcurrentRequests(t *testing.T) {
 	}
 	wg.Wait()
 	if failed.Load() != 0 || logged.Len() != 0 {
-		t.Fatalf("%d échecs, journal %q", failed.Load(), logged.String())
+		t.Fatalf("%d failures, log %q", failed.Load(), logged.String())
 	}
 }
 
@@ -705,7 +705,7 @@ func TestEmbeddedPage(t *testing.T) {
 		a := f.get(name)
 		f.status(t, a, 200)
 		if regexp.MustCompile(`innerHTML|outerHTML|insertAdjacentHTML|document\.write|https?://`).Match(a.body) {
-			t.Fatalf("%s charge du HTML ou une ressource externe", name)
+			t.Fatalf("%s loads HTML or an external resource", name)
 		}
 	}
 }
@@ -769,7 +769,7 @@ func TestInvalidQueries400(t *testing.T) {
 		f.status(t, f.get("/api/search?q=mot&"+q), 400)
 		f.status(t, f.get("/api/points?"+q), 400)
 	}
-	if a := f.get("/api/points?kind=x"); string(a.body) != `{"error":"kind invalide"}` {
+	if a := f.get("/api/points?kind=x"); string(a.body) != `{"error":"invalid kind"}` {
 		t.Fatalf("%s", a.body)
 	}
 }
@@ -1172,7 +1172,7 @@ func TestForgetSessionWaitsForTheIndexLock(t *testing.T) {
 	a := f.post("/api/sessions/forget", obj{"id": "sess-A"})
 	release()
 	f.status(t, a, 503)
-	if string(a.body) != `{"error":"la mémoire est occupée, réessaie dans un instant"}` {
+	if string(a.body) != `{"error":"memory is busy, try again in a moment"}` {
 		t.Fatalf("%s", a.body)
 	}
 	if len(f.sessions("")) != 2 {
@@ -1202,7 +1202,7 @@ func TestNoRouteStartsASummary(t *testing.T) {
 	f.post("/api/subjects/merge", obj{"from": w.b, "into": w.a})
 	f.post("/api/sessions/forget", obj{"id": "sess-B"})
 	if _, err := os.Stat(claudeMarker); err == nil {
-		t.Fatal("claude a été appelé")
+		t.Fatal("claude was called")
 	}
 }
 
@@ -1221,7 +1221,7 @@ func TestMemo(t *testing.T) {
 		t.Fatalf("%q\n%q", got.Text, want)
 	}
 	f.get("/api/memo").json(t, &got)
-	if !strings.Contains(got.Text, "Dernières sessions :") {
+	if !strings.Contains(got.Text, "Latest sessions:") {
 		t.Fatal(got.Text)
 	}
 	repo, err := subjects.EnsureRepo(f.conn, "example/widget", "widget")
@@ -1231,7 +1231,7 @@ func TestMemo(t *testing.T) {
 	f.point(w.ea, repo, "decision", "Utiliser sqlite", 3)
 	f.exec("INSERT INTO repo_cache VALUES (?, ?, 't')", f.s.cwd, repo)
 	f.get("/api/memo").json(t, &got)
-	if !strings.Contains(got.Text, "Sujet « widget »") || !strings.Contains(got.Text, "Utiliser sqlite") {
+	if !strings.Contains(got.Text, "Subject \"widget\"") || !strings.Contains(got.Text, "Utiliser sqlite") {
 		t.Fatal(got.Text)
 	}
 }
@@ -1329,7 +1329,7 @@ func TestRenameSubject(t *testing.T) {
 	f.status(t, f.post("/api/subjects/rename", obj{"uid": "inconnu", "name": "X"}), 404)
 	a := f.post("/api/subjects/rename", obj{"uid": w.a, "name": "BÉTA"})
 	f.status(t, a, 409)
-	if string(a.body) != `{"error":"un autre sujet s'appelle déjà « Beta » : pour les réunir, utilise « Fusionner »"}` {
+	if string(a.body) != `{"error":"another subject is already named \"Beta\": to combine them, use \"Merge\""}` {
 		t.Fatalf("%s", a.body)
 	}
 	if s, _ := subjects.Get(f.conn, w.a); s.Name != "Gamma rayon" {
@@ -1458,7 +1458,7 @@ func TestServePrintsTheURLAndOpensTheBrowser(t *testing.T) {
 			t.Fatal(open, opened)
 		}
 		if _, err := http.Get(url); err == nil {
-			t.Fatal("le serveur répond encore")
+			t.Fatal("the server still answers")
 		}
 		if strings.Contains(logged.String(), m[1]) {
 			t.Fatal(logged.String())
