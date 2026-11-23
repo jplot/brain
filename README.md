@@ -2,7 +2,7 @@
 
 Mémoire persistante pour Claude Code. paul indexe les conversations, en tire des souvenirs (sujets, décisions, suspens, faits) rattachés à des sujets, et les rapporte à Claude quand on en parle : au démarrage d'une session, puis à chaque message qui touche un sujet connu.
 
-La mémoire reste sur la machine, dans `~/.claude/paul/` ; seuls les résumés passent par un modèle (voir « Résumés »). Les secrets repérés dans les messages sont masqués avant l'indexation.
+La mémoire reste sur la machine, dans `~/.claude/paul/`, mais le texte des conversations, secrets masqués, est envoyé au modèle pour être résumé (voir « Résumés »). Les secrets repérés dans les messages sont masqués avant l'indexation.
 
 ## Installation
 
@@ -19,7 +19,7 @@ Aucun réglage n'est nécessaire. Variables facultatives : `PAUL_HOME` (défaut 
 
 ## Résumés
 
-Dès la deuxième session, chaque session est résumée en arrière-plan par `claude -p` avec Haiku, et les synthèses des sujets sont écrites avec Sonnet. Le modèle reçoit le texte masqué des conversations et les souvenirs qui en sont tirés. Un résumé coûte environ 0,003 $ par session (mesuré).
+Dès la deuxième session, chaque session est résumée en arrière-plan par `claude -p` avec Haiku, et les synthèses des sujets sont écrites avec Sonnet. Le modèle reçoit le texte masqué des conversations et les souvenirs qui en sont tirés. Un résumé coûte environ 0,003 $ par session (mesuré), une synthèse avec Sonnet environ 0,05 $, au plus 10 synthèses par passage.
 
 ## Commandes
 
@@ -62,7 +62,7 @@ cwd      facultatif ; indice de dépôt pour le résumeur
 
 À faire sur une seule machine :
 
-1. Arrêter ce qui utilise l'ancienne base : les hooks `brain hook` de Claude Code (sessions ouvertes comprises), tout `brain web` en cours et tout processus Python de l'ancienne version.
+1. Arrêter ce qui utilise l'ancienne base : les hooks `brain hook` de Claude Code (sessions ouvertes comprises), tout `brain web` en cours et tout processus Python de l'ancienne version. Fermer aussi les sessions Claude Code et tout `paul web` en cours avant de lancer `paul migrate`.
 2. Retirer les hooks `brain hook` de `~/.claude/settings.json` et le skill `~/.claude/skills/souvenirs/`.
 3. Lancer `paul migrate` (options `--from` pour le chemin de l'ancienne base, `--root` pour la racine de ses projets). La commande refuse de s'exécuter si `paul.db` contient déjà des souvenirs ; une base créée par les premiers hooks, encore sans souvenirs, est remplacée. Chaque ancien projet devient un sujet, les points sont rattachés à leur sujet, les étiquettes et les accès sont abandonnés, puis l'index est reconstruit.
 4. Le journal de l'assistant vocal de l'ancienne version est converti au format v1 dans `~/.claude/paul/journals/vocal.jsonl`.
