@@ -3,7 +3,6 @@ package summary
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -41,8 +40,6 @@ const (
 	Refreshed  = "refreshed"
 )
 
-const utc = "2006-01-02T15:04:05.000Z"
-
 var ctx = context.Background()
 
 // Replaced by tests: none of them may reach the real claude.
@@ -64,21 +61,6 @@ type Options struct {
 	All, Force       bool
 }
 
-func stamp(now time.Time) string {
-	if now.IsZero() {
-		now = time.Now()
-	}
-	return now.UTC().Format(utc)
-}
-
-func newUID() string {
-	var b [16]byte
-	rand.Read(b[:])
-	b[6] = b[6]&0x0f | 0x40
-	b[8] = b[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
-}
-
 func PendingSessions(q db.Querier, now time.Time, o Options) ([]string, error) {
 	query := "SELECT m.session_id, max(m.ts) AS last FROM messages m" +
 		" LEFT JOIN (SELECT session_id, max(end_ts) AS done FROM episodes GROUP BY session_id) e" +
@@ -93,13 +75,13 @@ func PendingSessions(q db.Querier, now time.Time, o Options) ([]string, error) {
 	}
 	if !o.Force {
 		query += " AND (f.attempts IS NULL OR (f.attempts < ? AND f.last_at < ?))"
-		args = append(args, MaxFailures, stamp(now.Add(-Retry)))
+		args = append(args, MaxFailures, db.Stamp(now.Add(-Retry)))
 	}
 	query += " GROUP BY m.session_id"
 	var having []string
 	if o.SessionID == "" {
 		having = append(having, "last < ?")
-		args = append(args, stamp(now.Add(-Quiet)))
+		args = append(args, db.Stamp(now.Add(-Quiet)))
 	}
 	if o.Since != "" {
 		having = append(having, "min(m.ts) >= ?")
@@ -327,7 +309,7 @@ func countAttempt(conn *sql.DB, sessionID string, now time.Time) (counted bool, 
 		}
 		_, err = c.ExecContext(ctx, "INSERT INTO summary_failures(session_id, attempts, last_at) VALUES (?, 1, ?)"+
 			" ON CONFLICT(session_id) DO UPDATE SET attempts = attempts + 1, last_at = excluded.last_at",
-			sessionID, stamp(now))
+			sessionID, db.Stamp(now))
 		counted = err == nil
 		return err
 	})
@@ -336,7 +318,7 @@ func countAttempt(conn *sql.DB, sessionID string, now time.Time) (counted bool, 
 
 func fail(conn *sql.DB, sessionID string, now time.Time, c *calls, err error) Outcome {
 	log.Printf("résumé échoué : %s (%T)", sessionID, err)
-	if _, err := conn.Exec("UPDATE summary_failures SET last_at = ? WHERE session_id = ?", stamp(now), sessionID); err != nil {
+	if _, err := conn.Exec("UPDATE summary_failures SET last_at = ? WHERE session_id = ?", db.Stamp(now), sessionID); err != nil {
 		log.Printf("date d'échec non mise à jour : %s (%T)", sessionID, err)
 	}
 	return Outcome{Status: Failed, CostUSD: c.cost, SessionID: sessionID}
@@ -445,7 +427,7 @@ func summarize(conn *sql.DB, user, sessionID string, c *calls, now time.Time) (O
 			status = Summarized
 		}
 	}
-	written, err := store(conn, sessionID, e, stamp(now))
+	written, err := store(conn, sessionID, e, db.Stamp(now))
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -505,7 +487,7 @@ func store(conn *sql.DB, sessionID string, e episode, created string) (written b
 			return err
 		}
 		res, err := c.ExecContext(ctx, "INSERT INTO episodes(uid, session_id, start_ts, end_ts, title, summary,"+
-			" created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", newUID(), sessionID, e.start, e.end, e.title,
+			" created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", db.NewUID(), sessionID, e.start, e.end, e.title,
 			e.summary, created, created)
 		if err != nil {
 			return err
@@ -516,7 +498,7 @@ func store(conn *sql.DB, sessionID string, e episode, created string) (written b
 		}
 		for _, p := range e.points {
 			if _, err := c.ExecContext(ctx, "INSERT INTO points(uid, episode_id, kind, text, importance, source_ts,"+
-				" created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", newUID(), id, p.kind,
+				" created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", db.NewUID(), id, p.kind,
 				mask.Text(p.text), p.importance, p.sourceTS, created, created); err != nil {
 				return err
 			}
@@ -596,7 +578,7 @@ func RefreshStale(conn *sql.DB, run Runner) (int, float64) {
 
 func refresh(conn *sql.DB, c *calls, e staleEpisode) (done bool, err error) {
 	if _, err := conn.Exec("UPDATE episodes SET title = NULL, summary = NULL, summary_stale = 0, updated_at = ?"+
-		" WHERE id = ?", stamp(time.Time{}), e.id); err != nil {
+		" WHERE id = ?", db.Stamp(time.Time{}), e.id); err != nil {
 		return false, err
 	}
 	ids, texts, err := remaining(conn, e.id)
@@ -619,7 +601,7 @@ func refresh(conn *sql.DB, c *calls, e staleEpisode) (done bool, err error) {
 		}
 		_, err = tx.ExecContext(ctx, "UPDATE episodes SET title = ?, summary = ?, summary_stale = 0, updated_at = ?"+
 			" WHERE id = ?", mask.Text(output["title"].(string)), mask.Text(output["summary"].(string)),
-			stamp(time.Time{}), e.id)
+			db.Stamp(time.Time{}), e.id)
 		done = err == nil
 		return err
 	})
@@ -630,7 +612,7 @@ func since(conn *sql.DB, o Options, now time.Time) (string, error) {
 	if o.All || o.Since != "" {
 		return o.Since, nil
 	}
-	if _, err := conn.Exec("INSERT OR IGNORE INTO meta(key, value) VALUES ('summaries_since', ?)", stamp(now)); err != nil {
+	if _, err := conn.Exec("INSERT OR IGNORE INTO meta(key, value) VALUES ('summaries_since', ?)", db.Stamp(now)); err != nil {
 		return "", err
 	}
 	var first string

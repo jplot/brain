@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"fmt"
 	"net/url"
 	"os"
 	"strconv"
@@ -74,4 +76,22 @@ func rebuild(d *sql.DB, schema string) error {
 	}
 	_, err = conn.ExecContext(ctx, "COMMIT")
 	return err
+}
+
+const UTCFormat = "2006-01-02T15:04:05.000Z"
+
+// Stamp formats t in UTC to the millisecond; the zero time means now.
+func Stamp(t time.Time) string {
+	if t.IsZero() {
+		t = time.Now()
+	}
+	return t.UTC().Format(UTCFormat)
+}
+
+func NewUID() string {
+	var b [16]byte
+	rand.Read(b[:])
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }

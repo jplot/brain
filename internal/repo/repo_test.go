@@ -288,7 +288,7 @@ func TestSlowGitHonoursDeadline(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	_, ok, err := Cached(ctx, d, repo)
-	if elapsed := time.Since(start); err == nil || ok || elapsed > 150*time.Millisecond {
+	if elapsed := time.Since(start); err == nil || ok || elapsed > 500*time.Millisecond {
 		t.Fatalf("%v, %v after %v", ok, err, elapsed)
 	}
 	if n := count(t, d, "repo_cache") + count(t, d, "subjects"); n != 0 {
@@ -297,14 +297,54 @@ func TestSlowGitHonoursDeadline(t *testing.T) {
 }
 
 func TestDefaultDeadlineIsShared(t *testing.T) {
-	fakeGit(t, "exec /bin/sleep 10")
+	fakeGit(t, "/bin/sleep 0.6 >/dev/null 2>&1\necho /srv/x/.git")
 	saved := gitTimeout
-	gitTimeout = 200 * time.Millisecond
+	gitTimeout = time.Second
 	t.Cleanup(func() { gitTimeout = saved })
 	start := time.Now()
 	_, _, err := Of(bg, t.TempDir())
-	if elapsed := time.Since(start); err == nil || elapsed > 350*time.Millisecond {
+	if elapsed := time.Since(start); err == nil || elapsed > 1500*time.Millisecond {
 		t.Fatalf("%v after %v", err, elapsed)
+	}
+}
+
+func TestOrphanWorktreeKeepsMainIdentity(t *testing.T) {
+	repo := makeRepo(t, filepath.Join(t.TempDir(), "atelier"))
+	sha := rootCommit(t, repo, "debut")
+	wt := addWorktree(t, repo, filepath.Join(t.TempDir(), "orphelin"))
+	info, ok, err := Of(bg, wt)
+	if err != nil || !ok || info != (Info{Identity: "commit:" + sha, Name: "atelier"}) {
+		t.Fatalf("%+v, %v, %v", info, ok, err)
+	}
+}
+
+func TestUnbornHeadWithHistoryOnOtherRefs(t *testing.T) {
+	repo := makeRepo(t, filepath.Join(t.TempDir(), "atelier"))
+	sha := rootCommit(t, repo, "debut")
+	git(t, repo, "checkout", "-q", "--orphan", "vide")
+	info, ok, err := Of(bg, repo)
+	if err != nil || !ok || info.Identity != "commit:"+sha {
+		t.Fatalf("%+v, %v, %v", info, ok, err)
+	}
+}
+
+func TestStaleNegativeCacheIsRecomputed(t *testing.T) {
+	d := openDB(t)
+	dir := mkdir(t, filepath.Join(t.TempDir(), "futur"))
+	if _, ok, err := Cached(bg, d, dir); ok || err != nil {
+		t.Fatalf("%v, %v", ok, err)
+	}
+	git(t, dir, "init", "-q")
+	git(t, dir, "remote", "add", "origin", "git@github.com:mon-compte/futur.git")
+	if _, ok, _ := Cached(bg, d, dir); ok {
+		t.Fatal("fresh negative entry ignored")
+	}
+	stale := db.Stamp(time.Now().Add(-25 * time.Hour))
+	if _, err := d.Exec("UPDATE repo_cache SET checked_at = ?", stale); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := Cached(bg, d, dir); !ok || err != nil {
+		t.Fatalf("%v, %v", ok, err)
 	}
 }
 

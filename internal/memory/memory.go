@@ -15,7 +15,6 @@ import (
 )
 
 const (
-	utc       = "2006-01-02T15:04:05.000Z"
 	day       = "2006-01-02"
 	pointCols = "p.id, p.episode_id, p.uid, p.kind, p.text, p.importance, p.source_ts, p.created_at," +
 		" p.closed_at, p.corrected, p.updated_at"
@@ -60,7 +59,7 @@ type PointFilter struct {
 	Limit              int
 }
 
-func now() string { return time.Now().UTC().Format(utc) }
+func now() string { return db.Stamp(time.Time{}) }
 
 func dayStart(s string, plus int) (string, error) {
 	t, err := time.ParseInLocation(day, s, time.Local)
@@ -68,7 +67,7 @@ func dayStart(s string, plus int) (string, error) {
 		return "", fmt.Errorf("date invalide %q : %w", s, err)
 	}
 	y, m, d := t.Date()
-	return time.Date(y, m, d+plus, 0, 0, 0, 0, time.Local).UTC().Format(utc), nil
+	return time.Date(y, m, d+plus, 0, 0, 0, 0, time.Local).UTC().Format(db.UTCFormat), nil
 }
 
 func VisiblePoints(q db.Querier, f PointFilter) ([]Point, error) {

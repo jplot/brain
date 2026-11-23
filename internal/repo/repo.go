@@ -2,7 +2,6 @@ package repo
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -17,6 +16,9 @@ import (
 )
 
 var gitTimeout = 5 * time.Second
+
+// A folder that is not a repository today may be git-init-ed tomorrow.
+const negativeTTL = 24 * time.Hour
 
 var (
 	hostPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`)
@@ -75,7 +77,9 @@ func Of(ctx context.Context, path string) (Info, bool, error) {
 	if id, ok := Normalize(remote); ok {
 		return Info{Identity: id, Name: id[strings.LastIndex(id, "/")+1:]}, true, nil
 	}
-	roots, ok, err := runGit(ctx, path, "rev-list", "--max-parents=0", "HEAD")
+	// All refs, from the main repo: HEAD alone changes with the checked-out
+	// branch (an orphan worktree has none) and would change the identity.
+	roots, ok, err := runGit(ctx, main, "rev-list", "--max-parents=0", "--all")
 	if err != nil || !ok || roots == "" {
 		return Info{}, false, err
 	}
@@ -98,24 +102,29 @@ func runGit(ctx context.Context, dir string, args ...string) (string, bool, erro
 }
 
 func Cached(ctx context.Context, q db.Querier, path string) (string, bool, error) {
+	// The shared deadline bounds git only: a write after git used the whole
+	// budget must still succeed.
 	bg := context.Background()
 	var uid sql.NullString
-	err := q.QueryRowContext(bg, "SELECT subject_uid FROM repo_cache WHERE path = ?", path).Scan(&uid)
+	var checked string
+	err := q.QueryRowContext(bg, "SELECT subject_uid, checked_at FROM repo_cache WHERE path = ?", path).Scan(&uid, &checked)
 	if err == nil {
-		return uid.String, uid.Valid, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
+		at, perr := time.Parse(db.UTCFormat, checked)
+		if uid.Valid || perr == nil && time.Since(at) < negativeTTL {
+			return uid.String, uid.Valid, nil
+		}
+	} else if !errors.Is(err, sql.ErrNoRows) {
 		return "", false, err
 	}
 	info, ok, err := Of(ctx, path)
 	if err != nil {
 		return "", false, err
 	}
-	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	now := db.Stamp(time.Time{})
 	var found any
 	if ok {
 		if _, err := q.ExecContext(bg, "INSERT OR IGNORE INTO subjects(uid, kind, name, aliases, repo, created_at, updated_at) VALUES (?, 'repo', ?, '[]', ?, ?, ?)",
-			newUID(), info.Name, info.Identity, now, now); err != nil {
+			db.NewUID(), info.Name, info.Identity, now, now); err != nil {
 			return "", false, err
 		}
 		var subject string
@@ -129,12 +138,4 @@ func Cached(ctx context.Context, q db.Querier, path string) (string, bool, error
 	}
 	subject, _ := found.(string)
 	return subject, ok, nil
-}
-
-func newUID() string {
-	var b [16]byte
-	rand.Read(b[:])
-	b[6] = b[6]&0x0f | 0x40
-	b[8] = b[8]&0x3f | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }

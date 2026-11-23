@@ -19,7 +19,6 @@ const (
 	markOff = "\x02"
 
 	from = " FROM messages m"
-	utc  = "2006-01-02T15:04:05.000Z"
 )
 
 var (
@@ -85,7 +84,7 @@ func ToFTSQuery(text string) (string, error) {
 
 func dayStart(t time.Time, plus int) string {
 	y, m, d := t.Date()
-	return time.Date(y, m, d+plus, 0, 0, 0, 0, t.Location()).UTC().Format(utc)
+	return time.Date(y, m, d+plus, 0, 0, 0, 0, t.Location()).UTC().Format(db.UTCFormat)
 }
 
 func visible(since, until *time.Time) (clauses []string, args []any) {
