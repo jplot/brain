@@ -338,7 +338,8 @@ func link(q db.Querier, session, uid string) error {
 	if uid == "" {
 		return nil
 	}
-	_, err := q.ExecContext(ctx, "INSERT OR IGNORE INTO session_repos(session_id, subject_uid) VALUES (?, ?)", session, uid)
+	_, err := q.ExecContext(ctx, `INSERT OR IGNORE INTO session_repos(session_id, subject_uid) SELECT ?, ?
+		WHERE NOT EXISTS (SELECT 1 FROM forgotten_sessions WHERE session_id = ?)`, session, uid, session)
 	return err
 }
 

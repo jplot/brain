@@ -1063,3 +1063,34 @@ func TestRebuildKeepsStateAndRecomputesRepos(t *testing.T) {
 		t.Fatal("repos differ after rebuild")
 	}
 }
+
+func TestForgetDuringRetryGitCallLeavesNoRepoLink(t *testing.T) {
+	f := newFixture(t)
+	a := gitRepo(t, filepath.Join(t.TempDir(), "a"), "git@example.org:o/alpha.git")
+	f.transcript("-p", "s1", withCwd(user("un"), a))
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Getenv("PATH")
+	t.Setenv("PATH", t.TempDir())
+	f.all()
+	bin := t.TempDir()
+	shim := "#!/bin/sh\n/bin/sleep 0.3\nexec " + realGit + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+original)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(150 * time.Millisecond)
+		f.exec("INSERT INTO forgotten_sessions(session_id, at) VALUES ('s', '2026-01-01T00:00:00.000Z')")
+	}()
+	f.all()
+	wg.Wait()
+	if f.count("SELECT count(*) FROM forgotten_sessions") != 1 || f.count("SELECT count(*) FROM session_repos") != 0 {
+		t.Fatal("repo link written for a session forgotten during the git call")
+	}
+}
