@@ -2,7 +2,7 @@
 
 Mémoire persistante pour Claude Code. paul indexe les conversations, en tire des souvenirs (sujets, décisions, suspens, faits) rattachés à des sujets, et les rapporte à Claude quand on en parle : au démarrage d'une session, puis à chaque message qui touche un sujet connu.
 
-Tout reste sur la machine, dans `~/.claude/paul/`. Les secrets repérés dans les messages sont masqués avant l'indexation.
+La mémoire reste sur la machine, dans `~/.claude/paul/` ; seuls les résumés passent par un modèle (voir « Résumés »). Les secrets repérés dans les messages sont masqués avant l'indexation.
 
 ## Installation
 
@@ -13,9 +13,13 @@ claude plugin marketplace add jplot/brain
 claude plugin install paul@jplot
 ```
 
-Au premier démarrage de session, le plugin télécharge en arrière-plan le binaire correspondant à la plateforme (macOS ou Linux, arm64 ou amd64) et en vérifie l'empreinte : cette première session tourne sans mémoire. La commande `paul` apparaît dans `~/.local/bin` au démarrage de la session suivante. Cet emplacement se change avec `PAUL_BIN_DIR`. Dépendances : `claude`, `git`, `curl`, `shasum` ou `sha256sum`.
+Au premier démarrage de session, le plugin télécharge en arrière-plan le binaire correspondant à la plateforme (macOS ou Linux, arm64 ou amd64) et en vérifie l'empreinte : cette première session tourne sans mémoire. La commande `paul` apparaît dans `~/.local/bin` au démarrage de la session suivante ; ce dossier doit figurer dans le `PATH`. Cet emplacement se change avec `PAUL_BIN_DIR`. Dépendances : `claude`, `git`, `curl`, `shasum` ou `sha256sum`.
 
 Aucun réglage n'est nécessaire. Variables facultatives : `PAUL_HOME` (défaut `~/.claude/paul/`) et `PAUL_TRANSCRIPTS` (défaut `~/.claude/projects/`).
+
+## Résumés
+
+Dès la deuxième session, chaque session est résumée en arrière-plan par `claude -p` avec Haiku, et les synthèses des sujets sont écrites avec Sonnet. Le modèle reçoit le texte masqué des conversations et les souvenirs qui en sont tirés. Un résumé coûte environ 0,003 $ par session (mesuré).
 
 ## Commandes
 
