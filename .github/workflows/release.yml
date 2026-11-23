@@ -1,0 +1,41 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0"
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Check the tag against plugin.json
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          declared=$(jq -r .version .claude-plugin/plugin.json)
+          if [ "$declared" != "$version" ]; then
+            echo "plugin.json declares $declared, the tag is $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+      - run: go test ./...
+      - name: Build
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir dist
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            GOOS="${target%/*}" GOARCH="${target#*/}" go build -trimpath \
+              -ldflags "-X main.version=$version" \
+              -o "dist/paul-${target%/*}-${target#*/}" ./cmd/paul
+          done
+          (cd dist && sha256sum paul-* > checksums.txt)
+      - name: Publish
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes

@@ -1,0 +1,14 @@
+{
+  "name": "jplot",
+  "owner": {
+    "name": "jplot"
+  },
+  "description": "Plugins de jplot pour Claude Code.",
+  "plugins": [
+    {
+      "name": "paul",
+      "source": "./",
+      "description": "Mémoire persistante pour Claude Code."
+    }
+  ]
+}

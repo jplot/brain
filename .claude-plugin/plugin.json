@@ -1,0 +1,6 @@
+{
+  "name": "paul",
+  "version": "0.1.0",
+  "description": "Mémoire persistante pour Claude Code : retient les conversations, en tire des souvenirs rattachés à des sujets et les rapporte quand on en parle.",
+  "repository": "https://github.com/jplot/brain"
+}
