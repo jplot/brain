@@ -3,6 +3,7 @@ package subjects
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -106,6 +107,12 @@ func TestNormalize(t *testing.T) {
 		"ÇA_VA, Ångström":          "ca va angstrom",
 		"nas 2":                    "nas 2",
 		"Démarche (administratif)": "demarche administratif",
+		"cœur":                     "coeur",
+		"Œuvre":                    "oeuvre",
+		"Æther":                    "aether",
+		"ﬁchier":                   "fichier",
+		"ＮＡＳ":                      "nas",
+		"Bureau 12 m²":             "bureau 12 m2",
 	} {
 		if got := Normalize(in); got != want {
 			t.Errorf("Normalize(%q) = %q, attendu %q", in, got, want)
@@ -271,6 +278,50 @@ func TestLinkRejectsUnknownType(t *testing.T) {
 	}
 	if n := count(t, d, "SELECT count(*) FROM links"); n != 0 {
 		t.Fatalf("%d liens écrits", n)
+	}
+}
+
+func TestLinkRejectsSelf(t *testing.T) {
+	d := openDB(t)
+	a := create(t, d, "Client")
+	for _, write := range []func(db.Querier, string, string, string, Origin) error{Link, Unlink} {
+		if err := write(d, a, "depends_on", a, Origin{User: true}); !errors.Is(err, ErrSelfLink) {
+			t.Fatalf("lien vers soi-même : %v", err)
+		}
+	}
+}
+
+func TestModelRelinkWritesNothing(t *testing.T) {
+	d := openDB(t)
+	client, tool := create(t, d, "Client"), create(t, d, "Outil")
+	for _, write := range []func(db.Querier, string, string, string, Origin) error{Link, Unlink} {
+		if err := write(d, client, "depends_on", tool, Origin{EpisodeUID: ptr("ep-1")}); err != nil {
+			t.Fatal(err)
+		}
+		exec(t, d, "UPDATE links SET updated_at = ?", old)
+		if err := write(d, client, "depends_on", tool, Origin{EpisodeUID: ptr("ep-2")}); err != nil {
+			t.Fatal(err)
+		}
+		if l, _ := linkOf(t, d, client, "depends_on", tool); l.episode.String != "ep-1" {
+			t.Fatalf("épisode réécrit : %+v", l)
+		}
+		if n := count(t, d, "SELECT count(*) FROM links WHERE updated_at = ?", old); n != 1 {
+			t.Fatal("lien inchangé réécrit")
+		}
+	}
+}
+
+func TestModelCannotRemoveParent(t *testing.T) {
+	d := openDB(t)
+	home, nas, rack := create(t, d, "Maison"), create(t, d, "NAS"), create(t, d, "Baie")
+	setParent(t, d, nas, home, Origin{EpisodeUID: ptr("ep-1")})
+	for _, child := range []string{nas, rack} {
+		if err := SetParent(d, child, "", Origin{EpisodeUID: ptr("ep-2")}); !errors.Is(err, ErrRemoveParent) {
+			t.Fatalf("retrait de parent par le modèle : %v", err)
+		}
+	}
+	if parent, _, _ := parentOf(t, d, nas); parent.String != home {
+		t.Fatalf("parent retiré : %v", parent)
 	}
 }
 
@@ -485,6 +536,40 @@ func TestMergeKeepsSurvivorParent(t *testing.T) {
 	}
 }
 
+func treeSize(nodes []Node) int {
+	n := len(nodes)
+	for _, node := range nodes {
+		n += treeSize(node.Children)
+	}
+	return n
+}
+
+func TestMergeBreaksCycleFromSync(t *testing.T) {
+	for _, size := range []int{2, 3} {
+		d := openDB(t)
+		ring := []string{}
+		for i := range size {
+			ring = append(ring, create(t, d, fmt.Sprintf("Sujet %d", i)))
+		}
+		for i, uid := range ring {
+			exec(t, d, "UPDATE subjects SET parent_uid = ?, parent_origin = 'model' WHERE uid = ?", ring[(i+1)%size], uid)
+		}
+		if err := Merge(d, ring[0], ring[size-1]); err != nil {
+			t.Fatal(err)
+		}
+		if n := count(t, d, "SELECT count(*) FROM subjects WHERE parent_uid = uid"); n != 0 {
+			t.Fatalf("cycle de %d : %d sujets parents d'eux-mêmes", size, n)
+		}
+		tree, err := Tree(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tree) != 1 || treeSize(tree) != size-1 {
+			t.Fatalf("cycle de %d : %d racines, %d sujets dans l'arbre", size, len(tree), treeSize(tree))
+		}
+	}
+}
+
 func TestMergeIntoAncestorKeepsTree(t *testing.T) {
 	d := openDB(t)
 	office, desk, lamp := create(t, d, "Bureau"), create(t, d, "Table"), create(t, d, "Lampe")
@@ -544,6 +629,23 @@ func TestMergeDuplicatesByNameAndRepo(t *testing.T) {
 
 	if n, err := MergeDuplicates(d); err != nil || n != 0 {
 		t.Fatalf("second passage : %d, %v", n, err)
+	}
+}
+
+func TestMergeDuplicatesSkipsVanishedSubjects(t *testing.T) {
+	d := openDB(t)
+	for _, name := range []string{"Réseau maison", "reseau-maison", "RÉSEAU MAISON", "Fiche", "fiche"} {
+		exec(t, d, "INSERT INTO subjects(uid, kind, name, aliases, created_at, updated_at) VALUES (?, 'subject', ?, '[]', ?, ?)", db.NewUID(), name, old, old)
+	}
+	stale, err := query(d, "WHERE kind = 'subject' ORDER BY uid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := mergeDuplicates(d, stale); err != nil || n != 3 {
+		t.Fatalf("premier passage : %d, %v", n, err)
+	}
+	if n, err := mergeDuplicates(d, stale); err != nil || n != 0 {
+		t.Fatalf("second passage sur une liste périmée : %d, %v", n, err)
 	}
 }
 

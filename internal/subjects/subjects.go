@@ -31,9 +31,14 @@ func now() string { return db.Stamp(time.Time{}) }
 
 func Normalize(name string) string {
 	var b strings.Builder
-	for _, r := range norm.NFD.String(name) {
+	for _, r := range norm.NFKD.String(name) {
 		switch {
 		case unicode.Is(unicode.Mn, r):
+		// NFKD leaves œ and æ whole, and "cœur" must find "coeur".
+		case r == 'œ' || r == 'Œ':
+			b.WriteString("oe")
+		case r == 'æ' || r == 'Æ':
+			b.WriteString("ae")
 		case unicode.IsLetter(r) || unicode.IsDigit(r):
 			b.WriteRune(unicode.ToLower(r))
 		default:

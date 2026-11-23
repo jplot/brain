@@ -15,6 +15,8 @@ var (
 	ErrUserSet      = errors.New("posé par l'utilisateur, le résumeur n'y touche pas")
 	ErrLinkType     = errors.New("type de lien inconnu")
 	ErrSelfMerge    = errors.New("un sujet ne se fusionne pas avec lui-même")
+	ErrSelfLink     = errors.New("un sujet ne se lie pas à lui-même")
+	ErrRemoveParent = errors.New("seul l'utilisateur retire un parent")
 )
 
 type Origin struct {
@@ -106,6 +108,9 @@ func SetParent(q db.Querier, child, parent string, o Origin) error {
 	if err != nil {
 		return err
 	}
+	if parent == "" && !o.User {
+		return ErrRemoveParent
+	}
 	var target any
 	if parent != "" {
 		if parent == child {
@@ -150,7 +155,20 @@ func writeLink(q db.Querier, source, typ, target string, active bool, o Origin) 
 	if typ != "depends_on" && typ != "about" {
 		return ErrLinkType
 	}
+	if source == target {
+		return ErrSelfLink
+	}
 	if err := exists(q, source, target); err != nil {
+		return err
+	}
+	// Rewriting an unchanged link would bump updated_at and push it to sync again.
+	var was bool
+	var origin string
+	err := q.QueryRowContext(bg, "SELECT active, origin FROM links WHERE source_uid = ? AND type = ? AND target_uid = ?", source, typ, target).Scan(&was, &origin)
+	if err == nil && was == active && origin == o.name() {
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	guard := ""
@@ -298,9 +316,9 @@ func merge(q db.Querier, from, into string) error {
 	// Sync replays merges, so a merge never refuses the cycle it would make
 	// when into lies under from: it drops a model edge of that path, else the
 	// edge that pointed at from; into's user parent stays.
+	fromUnderInto := slices.ContainsFunc(fromUp, func(e edge) bool { return e.parent == into })
 	take, drop := false, ""
 	switch {
-	case slices.ContainsFunc(fromUp, func(e edge) bool { return e.parent == into }):
 	case len(path) == 1 || len(path) > 1 && path[0].origin != "user":
 		take = true
 	case len(path) > 1:
@@ -308,11 +326,17 @@ func merge(q db.Querier, from, into string) error {
 		if k := slices.IndexFunc(path, func(e edge) bool { return e.origin != "user" }); k >= 0 {
 			drop = path[k].child
 		}
+	case fromUnderInto:
 	default:
 		take = !i.parent.Valid && i.origin.String != "user"
 	}
 	if take {
 		i.parent, i.origin, i.episode = f.parent, f.origin, f.episode
+	}
+	// Both under each other is a ring brought by sync (A under B under A):
+	// from's parent then lies under into, so into becomes a root.
+	if take && fromUnderInto {
+		i.parent, i.origin, i.episode = sql.NullString{}, sql.NullString{}, sql.NullString{}
 	}
 	if !i.repo.Valid && f.repo.Valid {
 		i.repo, i.kind = f.repo, "repo"
@@ -323,7 +347,6 @@ func merge(q db.Querier, from, into string) error {
 		{"UPDATE subjects SET kind = ?, repo = ?, aliases = ?, parent_uid = ?, parent_origin = ?, parent_episode_uid = ?, updated_at = ? WHERE uid = ?",
 			i.kind, i.repo, encode(union(i.name, i.aliases, f.aliases, []string{f.name})), i.parent, i.origin, i.episode, at, into},
 		{"UPDATE subjects SET parent_uid = ?, updated_at = ? WHERE parent_uid = ?", into, at, from},
-		{"UPDATE subjects SET parent_uid = NULL, parent_episode_uid = NULL, updated_at = ? WHERE uid = ?", at, drop},
 		{"UPDATE points SET subject_uid = ?, updated_at = ? WHERE subject_uid = ?", into, at, from},
 		{"UPDATE episodes SET updated_at = ? WHERE uid IN (SELECT episode_uid FROM episode_subjects WHERE subject_uid = ?)", at, from},
 		{"UPDATE repo_cache SET subject_uid = ? WHERE subject_uid = ?", into, from},
@@ -335,6 +358,11 @@ func merge(q db.Querier, from, into string) error {
 	}
 	for _, step := range steps {
 		if _, err := q.ExecContext(bg, step[0].(string), step[1:]...); err != nil {
+			return err
+		}
+	}
+	if drop != "" {
+		if _, err := q.ExecContext(bg, "UPDATE subjects SET parent_uid = NULL, parent_episode_uid = NULL, updated_at = ? WHERE uid = ?", at, drop); err != nil {
 			return err
 		}
 	}
@@ -405,6 +433,10 @@ func MergeDuplicates(q db.Querier) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	return mergeDuplicates(q, all)
+}
+
+func mergeDuplicates(q db.Querier, all []Subject) (int, error) {
 	kept := map[string]string{}
 	n := 0
 	for _, s := range all {
@@ -413,7 +445,12 @@ func MergeDuplicates(q db.Querier) (int, error) {
 			kept[Normalize(s.Name)] = s.UID
 			continue
 		}
-		if err := Merge(q, s.UID, into); err != nil {
+		// A concurrent pass may already have merged either subject.
+		err := Merge(q, s.UID, into)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
 			return n, err
 		}
 		n++
