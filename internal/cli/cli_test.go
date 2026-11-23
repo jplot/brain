@@ -545,10 +545,14 @@ func TestNotYetAvailableCommands(t *testing.T) {
 func TestMigrateRefusals(t *testing.T) {
 	f := newFixture(t)
 	missing := filepath.Join(t.TempDir(), "brain.db")
-	contains(t, f.fails(2, "migrate", "--from", missing), "ancienne base introuvable : "+missing)
-	os.WriteFile(missing, nil, 0o600)
 	f.ok("index")
-	contains(t, f.fails(2, "migrate", "--from", missing), "paul.db existe déjà")
+	contains(t, f.fails(1, "migrate", "--from", missing), "paul : reprise impossible : paul.db existe déjà")
+	os.Remove(f.p.DB())
+	contains(t, f.fails(1, "migrate", "--from", missing), "paul : reprise impossible : ancienne base introuvable : "+missing)
+	logged, _ := os.ReadFile(f.p.Log())
+	contains(t, string(logged), "migrate : paul.db existe déjà")
+	contains(t, string(logged), "migrate : ancienne base introuvable : "+missing)
+	f.fails(2, "migrate", "--inconnue")
 }
 
 type lockedBuffer struct {

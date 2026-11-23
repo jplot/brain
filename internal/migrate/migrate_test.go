@@ -18,6 +18,8 @@ import (
 
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/paths"
+	"github.com/jplot/brain/internal/repo"
+	"github.com/jplot/brain/internal/search"
 	"github.com/jplot/brain/internal/summary"
 )
 
@@ -129,7 +131,6 @@ func (f *fixture) sample() []string {
 		`INSERT INTO forgotten_sessions VALUES ('s-oubli','2026-11-05T09:00:00.000Z')`,
 		`INSERT INTO summary_failures VALUES ('s-echec',2,'2026-11-05T10:00:00.000Z')`,
 		`INSERT INTO meta VALUES ('summaries_since','2026-11-01T00:00:00.000Z')`,
-		`INSERT INTO messages VALUES (1,'k','s-un','f','2026-11-02T10:00:00.000Z','claude','` + f.root + `',NULL,'ancien index')`,
 	}
 }
 
@@ -229,7 +230,6 @@ func TestMigrateTranslatesValues(t *testing.T) {
 	equal(t, column(t, conn, "SELECT session_id||' '||at FROM forgotten_sessions"), []string{"s-oubli 2026-11-05T09:00:00.000Z"})
 	equal(t, column(t, conn, "SELECT session_id||' '||attempts||' '||last_at FROM summary_failures"), []string{"s-echec 2 2026-11-05T10:00:00.000Z"})
 	equal(t, column(t, conn, "SELECT key||' '||value FROM meta"), []string{"summaries_since 2026-11-01T00:00:00.000Z"})
-	equal(t, column(t, conn, "SELECT count(*) FROM messages"), []string{"0"})
 }
 
 func TestMigrateProjectsBecomeSubjects(t *testing.T) {
@@ -285,6 +285,22 @@ func hash(t *testing.T, path string) [32]byte {
 	return sha256.Sum256(b)
 }
 
+func tree(t *testing.T, root string) []string {
+	t.Helper()
+	var names []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err == nil && path != root {
+			rel, _ := filepath.Rel(root, path)
+			names = append(names, rel)
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return names
+}
+
 func TestMigrateKeepsOldDatabaseUntouched(t *testing.T) {
 	for _, live := range []bool{false, true} {
 		f := newFixture(t)
@@ -305,12 +321,15 @@ func TestMigrateKeepsOldDatabaseUntouched(t *testing.T) {
 		for _, path := range files {
 			before[path] = hash(t, path)
 		}
+		listed := tree(t, filepath.Dir(f.old))
 		f.migrate()
 		for _, path := range files {
 			if hash(t, path) != before[path] {
 				t.Fatalf("live=%v: %s changed", live, path)
 			}
 		}
+		equal(t, tree(t, filepath.Dir(f.old)), listed)
+		equal(t, tree(t, f.p.Home), []string{"index.lock", "journals", "journals/vocal.jsonl", "paul.db"})
 		want := "4"
 		if live {
 			want = "5"
@@ -353,7 +372,7 @@ func TestMigrateLosesToConcurrentDatabase(t *testing.T) {
 	os.WriteFile(staged.DB(), nil, 0o600)
 	f.p.EnsureHome()
 	os.WriteFile(f.p.DB(), []byte("hook"), 0o600)
-	if err := commit(staged, f.p, true); !errors.Is(err, ErrAlreadyDone) {
+	if err := commit(staged, f.p, []string{"vocal.jsonl"}); !errors.Is(err, ErrAlreadyDone) {
 		t.Fatalf("got %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(f.p.Journals(), "vocal.jsonl")); !errors.Is(err, os.ErrNotExist) {
@@ -362,6 +381,93 @@ func TestMigrateLosesToConcurrentDatabase(t *testing.T) {
 	if b, _ := os.ReadFile(f.p.DB()); string(b) != "hook" {
 		t.Fatal("paul.db replaced")
 	}
+}
+
+func TestMigrateRefusesExistingJournal(t *testing.T) {
+	for _, name := range []string{"vocal.jsonl", "archive.jsonl"} {
+		f := newFixture(t)
+		f.build(append(f.sample(), f.archived()...)...).Close()
+		f.writeVocal(`{"t":1700000000,"type":"toi","texte":"bonjour"}` + "\n")
+		existing := filepath.Join(f.p.Journals(), name)
+		os.MkdirAll(f.p.Journals(), 0o700)
+		os.WriteFile(existing, []byte("déjà là\n"), 0o600)
+		err := Run(f.old, f.root, f.p, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), existing+" existe déjà") {
+			t.Fatalf("%s: got %v", name, err)
+		}
+		if b, _ := os.ReadFile(existing); string(b) != "déjà là\n" {
+			t.Fatalf("%s replaced", name)
+		}
+		equal(t, tree(t, f.p.Home), []string{"journals", "journals/" + name})
+	}
+}
+
+func TestMigrateExplainsGitUnusable(t *testing.T) {
+	f := newFixture(t)
+	f.build(f.sample()...).Close()
+	bin := t.TempDir()
+	os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nexit 1\n"), 0o755)
+	t.Setenv("PATH", bin)
+	err := Run(f.old, f.root, f.p, io.Discard)
+	if !errors.Is(err, repo.ErrGit) || !strings.Contains(err.Error(), "git est nécessaire pour reconnaître les dépôts") {
+		t.Fatalf("got %v", err)
+	}
+	equal(t, tree(t, f.p.Home), nil)
+}
+
+// Messages of a transcript Claude Code has deleted since (after 30 days by default).
+func (f *fixture) archived() []string {
+	gone := filepath.Join(f.p.Transcripts, "x", "s-archive.jsonl")
+	kept := filepath.Join(f.p.Transcripts, "x", "s-un.jsonl")
+	return []string{
+		`INSERT INTO sessions VALUES ('s-archive','` + f.atelier + `','` + f.atelier + `','Pergola','2026-10-01T10:00:00.000Z','2026-10-01T10:00:02.000Z')`,
+		`INSERT INTO messages VALUES
+			(10,'u9:0','s-archive','` + gone + `','2026-10-01T10:00:00.000Z','jonathan','` + f.atelier + `','main','la pergola en bois'),
+			(11,'u9:1','s-archive','` + gone + `','2026-10-01T10:00:01.000Z','outil','` + f.atelier + `','main','Bash liste'),
+			(12,'report:s-archive:abc','s-archive','` + gone + `','2026-10-01T10:00:02.000Z','sous_agent','` + f.atelier + `','main','rapport de jardinage'),
+			(13,'u1:0','s-un','` + kept + `','2026-11-02T10:00:00.000Z','jonathan','` + f.root + `',NULL,'bonjour')`,
+	}
+}
+
+func TestMigrateArchivesMessagesOfDeletedTranscripts(t *testing.T) {
+	f := newFixture(t)
+	f.build(append(f.sample(), f.archived()...)...).Close()
+	transcript := filepath.Join(f.p.Transcripts, "x", "s-un.jsonl")
+	os.MkdirAll(filepath.Dir(transcript), 0o700)
+	entry := `{"type":"user","uuid":"u1","sessionId":"s-un","timestamp":"2026-11-02T10:00:00Z","origin":{"kind":"human"},"message":{"role":"user","content":"bonjour"}}` + "\n"
+	if err := os.WriteFile(transcript, []byte(entry), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := f.migrate()
+	for _, want := range []string{"Messages archivés : 2", "Lignes d'outil non archivées : 1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	archive := filepath.Join(f.p.Journals(), "archive.jsonl")
+	got := readJournal(t, archive)
+	want := []line{
+		{1, "u9:0", "s-archive", "2026-10-01T10:00:00.000Z", "user", "la pergola en bois", "Pergola", &f.atelier},
+		{1, "report:s-archive:abc", "s-archive", "2026-10-01T10:00:02.000Z", "subagent", "rapport de jardinage", "", nil},
+	}
+	if len(got) != 2 || got[0].Cwd == nil || *got[0].Cwd != f.atelier {
+		t.Fatalf("got %+v", got)
+	}
+	got[0].Cwd = want[0].Cwd
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %+v\nwant %+v", got, want)
+	}
+	if fi, _ := os.Stat(archive); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode %v", fi.Mode().Perm())
+	}
+	conn := f.open()
+	hits, err := search.Search(conn, "pergola", search.Filter{})
+	if err != nil || len(hits) != 1 || hits[0].SessionID != "s-archive" || hits[0].Role != "user" {
+		t.Fatalf("%+v %v", hits, err)
+	}
+	equal(t, column(t, conn, "SELECT title FROM sessions WHERE id = 's-archive'"), []string{"Pergola"})
+	equal(t, column(t, conn, "SELECT s.name FROM session_repos r JOIN subjects s ON s.uid = r.subject_uid WHERE r.session_id = 's-archive'"), []string{"atelier"})
+	equal(t, column(t, conn, "SELECT count(*) FROM messages WHERE session_id = 's-un'"), []string{"1"})
 }
 
 type line struct {
@@ -394,7 +500,9 @@ func TestVocalConvertedKeepsSessionIDs(t *testing.T) {
 	f := newFixture(t)
 	f.build(append(f.sample(),
 		`INSERT INTO episodes VALUES (11,'vocal-2023-11-15','2023-11-14T22:13:00.000Z','2023-11-14T22:13:21.000Z','Vocal','v','[]','2023-11-15T00:00:00.000Z',0)`,
-		`INSERT INTO forgotten_sessions VALUES ('vocal-perso','2026-11-05T09:00:00.000Z')`)...).Close()
+		`INSERT INTO forgotten_sessions VALUES ('vocal-perso','2026-11-05T09:00:00.000Z')`,
+		`INSERT INTO messages VALUES (20,'vocal:vocal-2023-11-15:1700000000.9999995:agent','vocal-2023-11-15','`+
+			filepath.Join(filepath.Dir(f.old), "vocal", "conversation.jsonl")+`','2023-11-14T22:13:21.000Z','sous_agent','`+f.root+`',NULL,'le rapport')`)...).Close()
 	f.writeVocal(
 		`{"t":1763937000.5,"type":"toi","texte":"  bonjour  ","session":"vocal-perso"}`+"\n",
 		`{"t":1763937001,"type":"reponse","reponse":{"action":"repondre","texte":"salut"}}`+"\n",
@@ -415,6 +523,9 @@ func TestVocalConvertedKeepsSessionIDs(t *testing.T) {
 	}
 	if fi, _ := os.Stat(filepath.Join(f.p.Journals(), "vocal.jsonl")); fi.Mode().Perm() != 0o600 {
 		t.Fatalf("mode %v", fi.Mode().Perm())
+	}
+	if _, err := os.Stat(filepath.Join(f.p.Journals(), "archive.jsonl")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("vocal lines archived: %v", err)
 	}
 	conn := f.open()
 	equal(t, column(t, conn, "SELECT DISTINCT session_id FROM messages ORDER BY session_id"), []string{"vocal-2023-11-15", "vocal-2025-11-24"})

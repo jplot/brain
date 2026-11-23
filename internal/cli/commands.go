@@ -2,8 +2,8 @@ package cli
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -568,14 +568,13 @@ func migrateCmd(e *env, args []string) (int, error) {
 	if _, err := parseArgs(fs, args); err != nil {
 		return 0, err
 	}
-	if _, err := os.Stat(*from); errors.Is(err, os.ErrNotExist) {
-		return 0, usagef("ancienne base introuvable : %s", *from)
+	// Run once, by hand: the reason goes to the terminal as well as to paul.log.
+	if err := migrate.Run(*from, *root, e.p, e.out); err != nil {
+		log.Printf("migrate : %v", err)
+		fmt.Fprintf(e.err, "paul : reprise impossible : %v\n", err)
+		return 1, nil
 	}
-	err := migrate.Run(*from, *root, e.p, e.out)
-	if errors.Is(err, migrate.ErrAlreadyDone) {
-		return 0, usagef("migrate : %v", err)
-	}
-	return 0, err
+	return 0, nil
 }
 
 func webCmd(e *env, args []string) (int, error) {

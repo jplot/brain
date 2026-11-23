@@ -30,8 +30,8 @@ var (
 )
 
 type counts struct {
-	sessions, episodes, points, subjects int
-	rootSeen                             bool
+	sessions, episodes, points, subjects, archived, tools int
+	rootSeen                                              bool
 }
 
 // Run builds the new base in a staging folder and links it in place at the end,
@@ -40,6 +40,10 @@ func Run(old, root string, p paths.Paths, out io.Writer) error {
 	if _, err := os.Stat(p.DB()); err == nil {
 		return ErrAlreadyDone
 	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	old, err := filepath.Abs(old)
+	if err != nil {
 		return err
 	}
 	if err := p.EnsureHome(); err != nil {
@@ -51,15 +55,38 @@ func Run(old, root string, p paths.Paths, out io.Writer) error {
 	}
 	defer os.RemoveAll(stage)
 	staged := paths.Paths{Home: stage, Transcripts: p.Transcripts}
-	c, err := importBase(old, filepath.Clean(root), staged)
+	copied, err := copyOld(old, stage)
 	if err != nil {
 		return err
 	}
-	vocal, err := convertVocal(filepath.Join(filepath.Dir(old), "vocal", "conversation.jsonl"), staged.Journals())
+	vocalPath := filepath.Join(filepath.Dir(old), "vocal", "conversation.jsonl")
+	vocal, err := convertVocal(vocalPath, staged.Journals())
 	if err != nil {
 		return err
 	}
-	if err := commit(staged, p, vocal > 0); err != nil {
+	transcripts, err := filepath.Glob(filepath.Join(p.Transcripts, "*", "*.jsonl"))
+	if err != nil {
+		return err
+	}
+	kept := map[string]bool{}
+	for _, name := range transcripts {
+		kept[name] = true
+	}
+	if _, err := os.Stat(vocalPath); err == nil {
+		kept[vocalPath] = true
+	}
+	c, err := importBase(copied, filepath.Clean(root), staged, kept)
+	if err != nil {
+		return err
+	}
+	var journals []string
+	if vocal > 0 {
+		journals = append(journals, "vocal.jsonl")
+	}
+	if c.archived > 0 {
+		journals = append(journals, "archive.jsonl")
+	}
+	if err := commit(staged, p, journals); err != nil {
 		return err
 	}
 	stats, err := index.Rebuild(p)
@@ -70,34 +97,78 @@ func Run(old, root string, p paths.Paths, out io.Writer) error {
 	if !c.rootSeen {
 		fmt.Fprintf(out, "Racine des projets absente de l'ancienne base : %s (option --root)\n", root)
 	}
-	fmt.Fprintf(out, "Sessions résumées : %d\nÉpisodes : %d\nPoints : %d\nSujets créés : %d\nLignes vocales converties : %d\n",
-		c.sessions, c.episodes, c.points, c.subjects, vocal)
+	fmt.Fprintf(out, "Sessions résumées : %d\nÉpisodes : %d\nPoints : %d\nSujets créés : %d\nLignes vocales converties : %d\nMessages archivés : %d\n",
+		c.sessions, c.episodes, c.points, c.subjects, vocal, c.archived)
+	if c.tools > 0 {
+		fmt.Fprintf(out, "Lignes d'outil non archivées : %d (absentes du format v1)\n", c.tools)
+	}
 	fmt.Fprintf(out, "Index reconstruit : %d fichiers, %d messages\n", stats.Files, stats.Messages)
 	return nil
 }
 
 // A hard link never replaces a file: if a hook created paul.db meanwhile, the import loses.
-func commit(staged, p paths.Paths, vocal bool) error {
-	journal := filepath.Join(p.Journals(), "vocal.jsonl")
-	if vocal {
+func commit(staged, p paths.Paths, journals []string) error {
+	var linked []string
+	undo := func(err error) error {
+		for _, path := range linked {
+			err = errors.Join(err, os.Remove(path))
+		}
+		return err
+	}
+	if len(journals) > 0 {
 		if err := os.MkdirAll(p.Journals(), 0o700); err != nil {
 			return err
 		}
-		if err := os.Link(filepath.Join(staged.Journals(), "vocal.jsonl"), journal); err != nil {
-			return fmt.Errorf("journal vocal : %w", err)
+	}
+	for _, name := range journals {
+		path := filepath.Join(p.Journals(), name)
+		if err := os.Link(filepath.Join(staged.Journals(), name), path); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				err = fmt.Errorf("%s existe déjà : la reprise ne le remplace pas, déplacez-le puis relancez", path)
+			}
+			return undo(err)
 		}
+		linked = append(linked, path)
 	}
 	err := os.Link(staged.DB(), p.DB())
 	if errors.Is(err, fs.ErrExist) {
 		err = ErrAlreadyDone
 	}
-	if err != nil && vocal {
-		return errors.Join(err, os.Remove(journal))
+	if err != nil {
+		return undo(err)
 	}
-	return err
+	return nil
 }
 
-func importBase(old, root string, staged paths.Paths) (counts, error) {
+// Even read-only, SQLite leaves -wal and -shm files beside the base it opens: it reads a copy.
+func copyOld(old, dir string) (string, error) {
+	copied := filepath.Join(dir, "brain.db")
+	if err := copyFile(old, copied); errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("ancienne base introuvable : %s", old)
+	} else if err != nil {
+		return "", err
+	}
+	if err := copyFile(old+"-wal", copied+"-wal"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	return copied, nil
+}
+
+func copyFile(from, to string) error {
+	in, err := os.Open(from)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(to, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(out, in)
+	return errors.Join(err, out.Close())
+}
+
+func importBase(old, root string, staged paths.Paths, kept map[string]bool) (counts, error) {
 	var c counts
 	src, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: old, RawQuery: "mode=ro"}).String())
 	if err != nil {
@@ -121,7 +192,10 @@ func importBase(old, root string, staged paths.Paths) (counts, error) {
 	}
 	defer to.Rollback()
 	m := &mapper{to: to, root: root, uids: map[string]*string{}, c: &c}
-	steps := []func(*sql.Tx) error{m.projects, m.episodes, m.points}
+	steps := []func(*sql.Tx) error{m.projects, m.episodes, m.points, func(from *sql.Tx) (err error) {
+		c.archived, c.tools, err = archive(from, kept, staged.Journals())
+		return err
+	}}
 	for _, t := range carried {
 		steps = append(steps, func(from *sql.Tx) error { return copyTable(from, to, t) })
 	}
@@ -175,6 +249,9 @@ func (m *mapper) subject(path string) (*string, error) {
 
 func (m *mapper) resolve(path string) (string, error) {
 	info, ok, err := repo.Of(ctx, path)
+	if errors.Is(err, repo.ErrGit) {
+		return "", fmt.Errorf("git est nécessaire pour reconnaître les dépôts des anciens projets (%s) : %w", path, err)
+	}
 	if err != nil {
 		return "", err
 	}

@@ -25,7 +25,41 @@ type journalLine struct {
 	TS      string `json:"ts"`
 	Role    string `json:"role"`
 	Text    string `json:"text"`
-	Title   string `json:"title"`
+	Title   string `json:"title,omitempty"`
+	Cwd     string `json:"cwd,omitempty"`
+}
+
+// The file is created on the first line only: an empty journal is never linked in place.
+type journal struct {
+	path string
+	f    *os.File
+	w    *bufio.Writer
+	enc  *json.Encoder
+	n    int
+}
+
+func (j *journal) write(l journalLine) error {
+	if j.f == nil {
+		if err := os.MkdirAll(filepath.Dir(j.path), 0o700); err != nil {
+			return err
+		}
+		f, err := os.OpenFile(j.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err != nil {
+			return err
+		}
+		j.f, j.w = f, bufio.NewWriter(f)
+		j.enc = json.NewEncoder(j.w)
+		j.enc.SetEscapeHTML(false)
+	}
+	j.n++
+	return j.enc.Encode(l)
+}
+
+func (j *journal) close() error {
+	if j.f == nil {
+		return nil
+	}
+	return errors.Join(j.w.Flush(), j.f.Close())
 }
 
 // The session ids are the old version's: its episodes and forgotten sessions name them.
@@ -38,10 +72,8 @@ func convertVocal(from, dir string) (int, error) {
 		return 0, err
 	}
 	defer in.Close()
-	var out bytes.Buffer
-	enc := json.NewEncoder(&out)
-	enc.SetEscapeHTML(false)
-	n := 0
+	j := &journal{path: filepath.Join(dir, "vocal.jsonl")}
+	defer j.close()
 	lines := bufio.NewReader(in)
 	for {
 		raw, err := lines.ReadBytes('\n')
@@ -53,19 +85,12 @@ func convertVocal(from, dir string) (int, error) {
 			break
 		}
 		if l, ok := vocalLine(raw); ok {
-			if err := enc.Encode(l); err != nil {
+			if err := j.write(l); err != nil {
 				return 0, err
 			}
-			n++
 		}
 	}
-	if n == 0 {
-		return 0, nil
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return 0, err
-	}
-	return n, os.WriteFile(filepath.Join(dir, "vocal.jsonl"), out.Bytes(), 0o600)
+	return j.n, j.close()
 }
 
 func vocalLine(raw []byte) (journalLine, bool) {
