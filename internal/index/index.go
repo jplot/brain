@@ -1,0 +1,372 @@
+// Package index fills the rebuildable part of the database from the transcripts and the journals.
+package index
+
+import (
+	"bufio"
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/jplot/brain/internal/config"
+	"github.com/jplot/brain/internal/db"
+	"github.com/jplot/brain/internal/lock"
+	"github.com/jplot/brain/internal/paths"
+	"github.com/jplot/brain/internal/projects"
+	"github.com/jplot/brain/internal/transcript"
+)
+
+const busyTimeout = 30 * time.Second
+
+var ctx = context.Background()
+
+// Replaced by tests to make a line fail the way an unexpected bug would.
+var parseClaude = transcript.ParseClaudeLine
+
+type Stats struct{ Files, Messages, Malformed, Failed int }
+
+// Run takes the index lock, so concurrent callers queue instead of reading the same offsets.
+func Run(p paths.Paths, cfg config.Config) (Stats, error) {
+	if err := p.EnsureHome(); err != nil {
+		return Stats{}, err
+	}
+	release, _, err := lock.Writer(p.IndexLock(), true)
+	if err != nil {
+		return Stats{}, err
+	}
+	defer release()
+	conn, err := db.Open(p, busyTimeout)
+	if err != nil {
+		return Stats{}, err
+	}
+	defer conn.Close()
+	stats, upgraded, err := upgrade(conn, p, cfg)
+	if err != nil || upgraded {
+		return stats, err
+	}
+	return All(conn, p, cfg), nil
+}
+
+// Refresh does nothing while another process indexes: that one is already doing the work.
+func Refresh(conn *sql.DB, p paths.Paths, cfg config.Config) error {
+	if err := p.EnsureHome(); err != nil {
+		return err
+	}
+	release, acquired, err := lock.Writer(p.IndexLock(), false)
+	if err != nil || !acquired {
+		return err
+	}
+	defer release()
+	if _, upgraded, err := upgrade(conn, p, cfg); err != nil || upgraded {
+		return err
+	}
+	All(conn, p, cfg)
+	return nil
+}
+
+func All(conn *sql.DB, p paths.Paths, cfg config.Config) Stats {
+	var stats Stats
+	files, _ := filepath.Glob(filepath.Join(p.Transcripts, "*", "*.jsonl"))
+	for _, name := range files {
+		indexOne(conn, cfg, name, false, &stats)
+	}
+	for _, name := range cfg.Journals {
+		indexOne(conn, cfg, name, true, &stats)
+	}
+	return stats
+}
+
+func indexOne(conn *sql.DB, cfg config.Config, name string, journal bool, stats *Stats) {
+	done, err := indexFile(conn, cfg, name, journal)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		stats.Failed++
+		log.Printf("indexation échouée : %s (%T)", name, err)
+	default:
+		stats.Files++
+		stats.Messages += done.Messages
+		stats.Malformed += done.Malformed
+	}
+}
+
+func upgrade(conn *sql.DB, p paths.Paths, cfg config.Config) (stats Stats, upgraded bool, err error) {
+	var version int
+	if err := conn.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return stats, false, err
+	}
+	if version == db.IndexVersion {
+		return stats, false, nil
+	}
+	var empty bool
+	if err := conn.QueryRow("SELECT NOT EXISTS(SELECT 1 FROM messages) AND NOT EXISTS(SELECT 1 FROM files)").Scan(&empty); err != nil {
+		return stats, false, err
+	}
+	// An upgrade killed right after the rebuild leaves an empty version 0 base whose free pages
+	// still hold the old messages: the cleanup must run here too.
+	if version == 0 && empty {
+		return stats, false, finishUpgrade(conn)
+	}
+	if err := db.RebuildIndex(conn); err != nil {
+		return stats, false, err
+	}
+	stats = All(conn, p, cfg)
+	return stats, true, finishUpgrade(conn)
+}
+
+// The checkpoint reports "busy" without failing while a reader holds the WAL, and the WAL keeps
+// the old bytes: the version is only set after a complete cleanup.
+func finishUpgrade(conn *sql.DB) error {
+	if err := vacuum(conn); err != nil {
+		log.Printf("nettoyage de la base échoué (%T)", err)
+		return nil
+	}
+	_, err := conn.Exec(fmt.Sprintf("PRAGMA user_version=%d", db.IndexVersion))
+	return err
+}
+
+var vacuum = func(conn *sql.DB) error {
+	if _, err := conn.Exec("VACUUM"); err != nil {
+		return err
+	}
+	var busy, pages, moved int
+	if err := conn.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &pages, &moved); err != nil {
+		return err
+	}
+	if busy != 0 {
+		return errors.New("checkpoint bloqué par un lecteur")
+	}
+	return nil
+}
+
+func indexFile(conn *sql.DB, cfg config.Config, name string, journal bool) (Stats, error) {
+	var stats Stats
+	f, err := os.Open(name)
+	if err != nil {
+		return stats, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return stats, err
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return stats, err
+	}
+	defer tx.Rollback()
+
+	// A write comes first so the transaction takes the write lock at once: a deferred
+	// read-then-write transaction fails with SQLITE_BUSY_SNAPSHOT when another process commits between.
+	var offset int64
+	err = tx.QueryRow("UPDATE files SET size = size WHERE path = ? RETURNING offset", name).Scan(&offset)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return stats, err
+	}
+	if info.Size() < offset {
+		if err := forget(tx, name); err != nil {
+			return stats, err
+		}
+		offset = 0
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return stats, err
+	}
+	r := &reader{tx: tx, cfg: cfg, name: name, journal: journal, forgotten: map[string]bool{}, resolved: map[string]string{}}
+	if err := r.loadForgotten(); err != nil {
+		return stats, err
+	}
+	lines := bufio.NewReader(f)
+	for {
+		raw, err := lines.ReadBytes('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return stats, err
+		}
+		if len(raw) == 0 || raw[len(raw)-1] != '\n' {
+			break
+		}
+		offset += int64(len(raw))
+		if err := r.line(raw, &stats); err != nil {
+			return Stats{}, err
+		}
+	}
+	_, err = tx.Exec(`INSERT INTO files(path, offset, size) VALUES (?, ?, ?)
+		ON CONFLICT(path) DO UPDATE SET offset = excluded.offset, size = excluded.size`, name, offset, info.Size())
+	if err != nil {
+		return Stats{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Stats{}, err
+	}
+	return stats, nil
+}
+
+// A session shared with another file keeps wrong dates or title until a rebuild.
+func forget(tx *sql.Tx, name string) error {
+	if _, err := tx.Exec("DELETE FROM sessions WHERE id IN (SELECT session_id FROM messages WHERE file = ?)", name); err != nil {
+		return err
+	}
+	_, err := tx.Exec("DELETE FROM messages WHERE file = ?", name)
+	return err
+}
+
+type reader struct {
+	tx        *sql.Tx
+	cfg       config.Config
+	name      string
+	journal   bool
+	project   string
+	forgotten map[string]bool
+	resolved  map[string]string
+}
+
+func (r *reader) loadForgotten() error {
+	rows, err := r.tx.Query("SELECT session_id FROM forgotten_sessions")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return err
+		}
+		r.forgotten[id] = true
+	}
+	return rows.Err()
+}
+
+func (r *reader) line(raw []byte, stats *Stats) error {
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return nil
+	}
+	items, err := r.parse(raw)
+	if err != nil || hasNulCwd(items) {
+		stats.Malformed++
+		return nil
+	}
+	for _, item := range items {
+		if err := r.store(item, stats); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *reader) parse(raw []byte) ([]transcript.Item, error) {
+	if r.journal {
+		return transcript.ParseJournalLine(raw, r.name)
+	}
+	return parseClaude(raw, r.isAgentUse)
+}
+
+// A NUL cannot be part of a path, and git refuses it as an argument.
+func hasNulCwd(items []transcript.Item) bool {
+	for _, item := range items {
+		if e, ok := item.(transcript.Entry); ok && e.Cwd != nil && strings.ContainsRune(*e.Cwd, 0) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *reader) isAgentUse(id string) bool {
+	var one int
+	return r.tx.QueryRow("SELECT 1 FROM agent_uses WHERE id = ?", id).Scan(&one) == nil
+}
+
+func (r *reader) store(item transcript.Item, stats *Stats) error {
+	switch it := item.(type) {
+	case transcript.AgentUse:
+		_, err := r.tx.Exec("INSERT OR IGNORE INTO agent_uses(id) VALUES (?)", it.ToolUseID)
+		return err
+	case transcript.Title:
+		if r.forgotten[it.SessionID] {
+			return nil
+		}
+		_, err := r.tx.Exec(`INSERT INTO sessions(id, title) VALUES (?, ?)
+			ON CONFLICT(id) DO UPDATE SET title = excluded.title`, it.SessionID, it.Title)
+		return err
+	case transcript.Entry:
+		if r.forgotten[it.SessionID] {
+			return nil
+		}
+		return r.entry(it, stats)
+	}
+	return nil
+}
+
+func (r *reader) entry(e transcript.Entry, stats *Stats) error {
+	cwd := ""
+	if e.Cwd != nil {
+		cwd = *e.Cwd
+	}
+	project, err := r.projectOf(cwd, e.SessionID)
+	if err != nil {
+		return err
+	}
+	res, err := r.tx.Exec(`INSERT OR IGNORE INTO messages(key, session_id, file, ts, role, project, git_branch, text)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, e.Key, e.SessionID, r.name, e.TS, e.Role, project, e.GitBranch, e.Text)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil
+	}
+	stats.Messages++
+	var launchCwd, launchProject any
+	if cwd != "" {
+		launchCwd, launchProject = cwd, project
+	}
+	_, err = r.tx.Exec(`INSERT INTO sessions(id, launch_cwd, launch_project, started_at, ended_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+		launch_cwd = COALESCE(launch_cwd, excluded.launch_cwd),
+		launch_project = COALESCE(launch_project, excluded.launch_project),
+		started_at = COALESCE(MIN(started_at, excluded.started_at), excluded.started_at),
+		ended_at = COALESCE(MAX(ended_at, excluded.ended_at), excluded.ended_at)`,
+		e.SessionID, launchCwd, launchProject, e.TS, e.TS)
+	return err
+}
+
+func (r *reader) projectOf(cwd, session string) (string, error) {
+	var err error
+	switch {
+	case cwd != "":
+		// Without it, a repository seen while git is slow would cost 5 s per message.
+		if id, ok := r.resolved[cwd]; ok {
+			r.project = id
+		} else if r.project, err = projects.Resolve(ctx, r.tx, r.cfg, cwd); err == nil {
+			r.resolved[cwd] = r.project
+		}
+	case r.project == "":
+		r.project, err = r.remembered(session)
+	}
+	return r.project, err
+}
+
+func (r *reader) remembered(session string) (string, error) {
+	var project sql.NullString
+	err := r.tx.QueryRow("SELECT project FROM messages WHERE file = ? ORDER BY id DESC LIMIT 1", r.name).Scan(&project)
+	if err == nil {
+		return project.String, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	err = r.tx.QueryRow("SELECT launch_project FROM sessions WHERE id = ?", session).Scan(&project)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	if project.Valid && project.String != "" {
+		return project.String, nil
+	}
+	return projects.Roots, nil
+}
