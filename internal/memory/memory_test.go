@@ -918,3 +918,28 @@ func TestForgetSessionRestoresWhatItReplaced(t *testing.T) {
 	}
 	equal(t, texts(f.visible(PointFilter{})), []string{"ancien"})
 }
+
+func TestForgetSessionDropsTheSubjectItCreatedWithItsSynthesis(t *testing.T) {
+	f := newFixture(t)
+	gone := f.episode("s-oubli", t0, "t", "r")
+	invented, err := subjects.Create(f.db, "Personne Inventée", []string{"avocat"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.point(gone, pt{subject: invented})
+	f.point(gone, pt{subject: invented})
+	f.exec("INSERT INTO syntheses(subject_uid, uid, text, cited, created_at, updated_at) VALUES (?, 'y', 'texte', '[\"p2\"]', ?, ?)", invented, t0, t0)
+	f.exec("INSERT INTO summary_failures(session_id, attempts, last_at) VALUES (?, 1, ?)", "synthesis:"+invented, t0)
+	if err := ForgetSession(f.db, f.p, "s-oubli"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := subjects.Get(f.db, invented); !errors.Is(err, subjects.ErrNotFound) {
+		t.Fatal("subject kept", err)
+	}
+	if found, _ := subjects.ByTerms(f.db, []string{"avocat", "personne inventee"}); len(found) != 0 {
+		t.Fatal("alias still injects", found)
+	}
+	if n := f.count("SELECT count(*) FROM syntheses") + f.count("SELECT count(*) FROM summary_failures"); n != 0 {
+		t.Fatalf("%d synthesis rows kept", n)
+	}
+}

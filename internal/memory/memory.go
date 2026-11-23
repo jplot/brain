@@ -552,7 +552,7 @@ func dropOrphans(c *sql.Conn, touchedJSON string) error {
 			" AND NOT EXISTS (SELECT 1 FROM episode_subjects es WHERE es.subject_uid = subjects.uid)"+
 			" AND NOT EXISTS (SELECT 1 FROM subjects c WHERE c.parent_uid = subjects.uid)"+
 			" AND NOT EXISTS (SELECT 1 FROM links l WHERE subjects.uid IN (l.source_uid, l.target_uid))"+
-			" AND NOT EXISTS (SELECT 1 FROM syntheses y WHERE y.subject_uid = subjects.uid)", touchedJSON)
+			" AND NOT EXISTS (SELECT 1 FROM syntheses y WHERE y.subject_uid = subjects.uid AND y.stale = 0)", touchedJSON)
 		if err != nil {
 			return err
 		}
@@ -564,9 +564,17 @@ func dropOrphans(c *sql.Conn, touchedJSON string) error {
 			break
 		}
 	}
-	_, err := c.ExecContext(background, "DELETE FROM subject_terms WHERE subject_uid IN (SELECT value FROM json_each(?))"+
-		" AND subject_uid NOT IN (SELECT uid FROM subjects)", touchedJSON)
-	return err
+	for _, step := range []string{
+		"DELETE FROM subject_terms WHERE subject_uid IN (SELECT value FROM json_each(?1)) AND subject_uid NOT IN (SELECT uid FROM subjects)",
+		"DELETE FROM syntheses WHERE subject_uid IN (SELECT value FROM json_each(?1)) AND subject_uid NOT IN (SELECT uid FROM subjects)",
+		"DELETE FROM summary_failures WHERE session_id IN (SELECT ?2 || value FROM json_each(?1)" +
+			" WHERE value NOT IN (SELECT uid FROM subjects))",
+	} {
+		if _, err := c.ExecContext(background, step, touchedJSON, SynthesisFailureKey); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Only the archive is rewritten: paul migrate wrote it, while the other journals belong to

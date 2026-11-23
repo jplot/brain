@@ -19,6 +19,9 @@ func Synthesis(q db.Querier, subjectUID string) (string, error) {
 	return text, rows.Err()
 }
 
+// SynthesisFailureKey prefixes a subject uid in summary_failures: a session id is a UUID and cannot collide.
+const SynthesisFailureKey = "synthesis:"
+
 type ChildSynthesis struct{ UID, Name, Text string }
 
 func ChildSyntheses(q db.Querier, parentUID string, limit int) ([]ChildSynthesis, error) {

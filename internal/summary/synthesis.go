@@ -26,7 +26,7 @@ const (
 
 	Synthesized = "synthesized"
 
-	failureKey = "synthesis:"
+	failureKey = memory.SynthesisFailureKey
 )
 
 // Replaced by tests: none of them may reach the real claude.
@@ -47,7 +47,6 @@ func synthesisSystem(user string) string {
 }
 
 // DueSyntheses requires two current points: a synthesis cites at least MinCited, so one point could never succeed.
-// Failure rows live in summary_failures under "synthesis:<subject uid>": a session id is a UUID and cannot collide.
 // A subject past MaxFailures waits for a point created after its last failure.
 func DueSyntheses(q db.Querier, now time.Time) ([]string, error) {
 	rows, err := q.QueryContext(ctx, "SELECT p.subject_uid,"+

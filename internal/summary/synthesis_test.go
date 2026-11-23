@@ -489,6 +489,8 @@ func TestForgottenSessionMarksCitingSynthesesStale(t *testing.T) {
 	Synthesize(f.db, camille, f.home, newModel(synthesisOf("A", points[0], points[1])).run, now0)
 	f.exec("UPDATE episodes SET session_id = 's9' WHERE id = (SELECT episode_id FROM points WHERE id = ?)", otherPoints[0])
 	f.exec("UPDATE points SET episode_id = (SELECT episode_id FROM points WHERE id = ?) WHERE id = ?", otherPoints[0], points[0])
+	f.exec("INSERT INTO episodes(uid, session_id, start_ts, end_ts, created_at, updated_at) VALUES ('e-reste', 's-reste', ?, ?, ?, ?)", t0, t0, t0, t0)
+	f.exec("UPDATE points SET episode_id = (SELECT id FROM episodes WHERE uid = 'e-reste') WHERE id = ?", points[1])
 	if err := memory.ForgetSession(f.db, f.p, "s9"); err != nil {
 		t.Fatal(err)
 	}
