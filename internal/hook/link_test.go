@@ -120,7 +120,7 @@ func TestStartLinksTheCommandAndLogsARegularFile(t *testing.T) {
 	os.Remove(link)
 	os.WriteFile(link, []byte("mine"), 0o755)
 	f.run("start", "{}")
-	if raw, _ := os.ReadFile(link); string(raw) != "mine" || !strings.Contains(f.logs.String(), "commande du terminal") {
+	if raw, _ := os.ReadFile(link); string(raw) != "mine" || !strings.Contains(f.logs.String(), "terminal command") {
 		t.Fatalf("%q, log %q", raw, f.logs.String())
 	}
 }

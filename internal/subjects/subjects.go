@@ -17,7 +17,7 @@ import (
 
 var (
 	bg          = context.Background()
-	ErrNotFound = errors.New("sujet inconnu")
+	ErrNotFound = errors.New("unknown subject")
 )
 
 type Subject struct {

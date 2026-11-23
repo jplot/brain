@@ -34,13 +34,13 @@ const (
 var (
 	background = context.Background()
 
-	ErrNothingToCorrect = errors.New("rien à corriger")
-	ErrInTransaction    = errors.New("ForgetSession exige une connexion sans transaction ouverte")
+	ErrNothingToCorrect = errors.New("nothing to correct")
+	ErrInTransaction    = errors.New("ForgetSession requires a connection without an open transaction")
 )
 
 type ErrPointNotFound struct{ ID int64 }
 
-func (e *ErrPointNotFound) Error() string { return fmt.Sprintf("point introuvable : %d", e.ID) }
+func (e *ErrPointNotFound) Error() string { return fmt.Sprintf("point not found: %d", e.ID) }
 
 type Point struct {
 	ID, EpisodeID       int64
@@ -84,7 +84,7 @@ func now() string { return db.Stamp(time.Time{}) }
 func dayStart(s string, plus int) (string, error) {
 	t, err := time.ParseInLocation(day, s, time.Local)
 	if err != nil {
-		return "", fmt.Errorf("date invalide %q : %w", s, err)
+		return "", fmt.Errorf("invalid date %q: %w", s, err)
 	}
 	y, m, d := t.Date()
 	return time.Date(y, m, d+plus, 0, 0, 0, 0, time.Local).UTC().Format(db.UTCFormat), nil
@@ -341,7 +341,7 @@ func CorrectPoint(q db.Querier, id int64, text *string, importance *int) error {
 		return ErrNothingToCorrect
 	}
 	if importance != nil && (*importance < 1 || *importance > 5) {
-		return fmt.Errorf("importance hors de 1 à 5 : %d", *importance)
+		return fmt.Errorf("importance out of range 1 to 5: %d", *importance)
 	}
 	var masked, imp any
 	if text != nil {
@@ -396,7 +396,7 @@ func flush(conn *sql.Conn) error {
 	var busy, pages, moved int
 	err := conn.QueryRowContext(background, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &pages, &moved)
 	if err == nil && busy == 1 {
-		log.Printf("point de contrôle occupé : %d pages sur %d restent dans le WAL", pages-moved, pages)
+		log.Printf("checkpoint busy: %d of %d pages remain in the WAL", pages-moved, pages)
 	}
 	_, restore := conn.ExecContext(background, fmt.Sprintf("PRAGMA busy_timeout=%d", timeout))
 	return errors.Join(err, restore)

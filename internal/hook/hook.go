@@ -43,7 +43,7 @@ func Run(event string, p paths.Paths, stdin io.Reader, stdout io.Writer) int {
 	case "start":
 		detach(summarizeArgs(""))
 		if err := LinkCommand(p, Version); err != nil {
-			log.Printf("hook start : commande du terminal : %v", err)
+			log.Printf("hook start: terminal command: %v", err)
 		}
 		if in.Source == "startup" || in.Source == "clear" {
 			emit(stdout, "SessionStart", startBudget, func() (string, func() error, error) {
@@ -67,7 +67,7 @@ func Run(event string, p paths.Paths, stdin io.Reader, stdout io.Writer) int {
 			detach([]string{"index"})
 		}
 	default:
-		log.Printf("hook : événement inconnu : %q", event)
+		log.Printf("hook: unknown event: %q", event)
 	}
 	return 0
 }
@@ -167,7 +167,7 @@ func emit(stdout io.Writer, name string, budget time.Duration, work func() (stri
 	select {
 	case r := <-done:
 		if r.err != nil {
-			log.Printf("hook %s : %v", name, r.err)
+			log.Printf("hook %s: %v", name, r.err)
 			return
 		}
 		if r.text == "" {
@@ -181,29 +181,29 @@ func emit(stdout io.Writer, name string, budget time.Duration, work func() (stri
 		enc.SetEscapeHTML(false)
 		enc.Encode(output{specific{name, r.text}})
 		if _, err := stdout.Write(bytes.TrimRight(out.Bytes(), "\n")); err != nil {
-			log.Printf("hook %s : écriture : %v", name, err)
+			log.Printf("hook %s: write: %v", name, err)
 			return
 		}
 		if r.record != nil {
 			if err := r.record(); err != nil {
-				log.Printf("hook %s : enregistrement : %v", name, err)
+				log.Printf("hook %s: record: %v", name, err)
 			}
 		}
 	case <-time.After(budget):
-		log.Printf("hook %s : délai de %v dépassé", name, budget)
+		log.Printf("hook %s: %v budget exceeded", name, budget)
 	}
 }
 
 func detach(args []string) {
 	exe, err := executable()
 	if err != nil {
-		log.Printf("hook : lancement impossible : %v", err)
+		log.Printf("hook: launch failed: %v", err)
 		return
 	}
 	cmd := exec.Command(exe, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
-		log.Printf("hook : lancement impossible : %v", err)
+		log.Printf("hook: launch failed: %v", err)
 		return
 	}
 	go cmd.Wait()

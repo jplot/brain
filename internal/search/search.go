@@ -24,7 +24,7 @@ const (
 )
 
 var (
-	ErrEmptyQuery = errors.New("requête vide")
+	ErrEmptyQuery = errors.New("empty query")
 	background    = context.Background()
 )
 
@@ -34,7 +34,7 @@ type ErrAmbiguousSession struct {
 }
 
 func (e *ErrAmbiguousSession) Error() string {
-	return fmt.Sprintf("début d'identifiant ambigu : %s (%s)", e.Ref, strings.Join(e.IDs, ", "))
+	return fmt.Sprintf("ambiguous id prefix: %s (%s)", e.Ref, strings.Join(e.IDs, ", "))
 }
 
 type Segment struct {

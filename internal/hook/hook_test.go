@@ -311,13 +311,13 @@ func TestHookLogsALaunchFailure(t *testing.T) {
 	f := newFixture(t)
 	executable = func() (string, error) { return "", errors.New("introuvable") }
 	f.run("end", "{}")
-	if !strings.Contains(f.logs.String(), "lancement impossible") {
+	if !strings.Contains(f.logs.String(), "launch failed") {
 		t.Fatalf("log %q", f.logs.String())
 	}
 	executable = func() (string, error) { return "/nonexistent/paul", nil }
 	f.logs.Reset()
 	f.run("end", "{}")
-	if !strings.Contains(f.logs.String(), "lancement impossible") {
+	if !strings.Contains(f.logs.String(), "launch failed") {
 		t.Fatalf("log %q", f.logs.String())
 	}
 }
@@ -413,7 +413,7 @@ func TestHookPromptOutputShape(t *testing.T) {
 	out, _ := f.run("prompt", payloadJSON(t, map[string]any{"session_id": "s1", "prompt": "Revoyons la facturation"}))
 	var got map[string]map[string]string
 	if err := json.Unmarshal([]byte(out), &got); err != nil || len(got) != 1 || len(got["hookSpecificOutput"]) != 2 ||
-		got["hookSpecificOutput"]["hookEventName"] != "UserPromptSubmit" || !strings.Contains(got["hookSpecificOutput"]["additionalContext"], "Sujet « Facturation »") {
+		got["hookSpecificOutput"]["hookEventName"] != "UserPromptSubmit" || !strings.Contains(got["hookSpecificOutput"]["additionalContext"], "Subject \"Facturation\"") {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	if again, _ := f.run("prompt", payloadJSON(t, map[string]any{"session_id": "s1", "prompt": "Revoyons la facturation"})); again != "" {
@@ -470,7 +470,7 @@ func TestEmitRecordsNothingAfterTheBudget(t *testing.T) {
 		return "texte", func() error { recorded <- struct{}{}; return nil }, nil
 	})
 	time.Sleep(250 * time.Millisecond)
-	if out.Len() != 0 || len(recorded) != 0 || !strings.Contains(f.logs.String(), "délai") {
+	if out.Len() != 0 || len(recorded) != 0 || !strings.Contains(f.logs.String(), "budget exceeded") {
 		t.Fatalf("out %q, recorded %d, log %q", out.String(), len(recorded), f.logs.String())
 	}
 }
@@ -494,7 +494,7 @@ func TestHookPromptRecordsNothingWhenTheRecordIsBlocked(t *testing.T) {
 	var n int
 	tx.Rollback()
 	d.QueryRow("SELECT count(*) FROM injected WHERE session_id = 's1' AND subject_uid = ?", uid).Scan(&n)
-	if n != 0 || took > 400*time.Millisecond || !strings.Contains(f.logs.String(), "enregistrement") {
+	if n != 0 || took > 400*time.Millisecond || !strings.Contains(f.logs.String(), "record") {
 		t.Fatalf("rows %d after %v, log %q", n, took, f.logs.String())
 	}
 }
@@ -547,7 +547,7 @@ func TestHookStartRecordsNothingWhenTheRecordIsBlocked(t *testing.T) {
 	tx.Rollback()
 	var n int
 	d.QueryRow("SELECT (SELECT count(*) FROM injected WHERE session_id = 'new') + (SELECT count(*) FROM point_usage)").Scan(&n)
-	if n != 0 || !strings.Contains(f.logs.String(), "enregistrement") {
+	if n != 0 || !strings.Contains(f.logs.String(), "record") {
 		t.Fatalf("rows %d, log %q", n, f.logs.String())
 	}
 }

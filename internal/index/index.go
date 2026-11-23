@@ -107,7 +107,7 @@ func All(conn *sql.DB, p paths.Paths) Stats {
 	ps := &pass{}
 	if err := ps.retryPending(conn); err != nil {
 		stats.Failed++
-		log.Printf("reprise des chemins en attente échouée (%T)", err)
+		log.Printf("retry of pending paths failed (%T)", err)
 	}
 	files, _ := filepath.Glob(filepath.Join(p.Transcripts, "*", "*.jsonl"))
 	for _, name := range files {
@@ -126,7 +126,7 @@ func indexOne(conn *sql.DB, ps *pass, name string, journal bool, stats *Stats) {
 	case errors.Is(err, fs.ErrNotExist):
 	case err != nil:
 		stats.Failed++
-		log.Printf("indexation échouée : %s (%T)", name, err)
+		log.Printf("indexing failed: %s (%T)", name, err)
 	default:
 		stats.Files++
 		stats.Messages += done.Messages
@@ -165,7 +165,7 @@ func upgrade(conn *sql.DB, p paths.Paths) (stats Stats, upgraded bool, err error
 // the old bytes: the version is only set after a complete cleanup.
 func finishUpgrade(conn *sql.DB) error {
 	if err := vacuum(conn); err != nil {
-		log.Printf("nettoyage de la base échoué (%T)", err)
+		log.Printf("database cleanup failed (%T)", err)
 		return nil
 	}
 	_, err := conn.Exec(fmt.Sprintf("PRAGMA user_version=%d", db.IndexVersion))
@@ -181,7 +181,7 @@ var vacuum = func(conn *sql.DB) error {
 		return err
 	}
 	if busy != 0 {
-		return errors.New("checkpoint bloqué par un lecteur")
+		return errors.New("checkpoint blocked by a reader")
 	}
 	return nil
 }
@@ -342,7 +342,7 @@ func (ps *pass) lookup(c context.Context, q db.Querier, dir string, memo map[str
 	uid, _, err = repo.Cached(c, q, dir)
 	if errors.Is(err, repo.ErrGit) {
 		ps.gitDown = true
-		log.Printf("découverte des dépôts reportée : %s", gitReason(err))
+		log.Printf("repository discovery postponed: %s", gitReason(err))
 		return "", false, errors.Is(err, context.DeadlineExceeded), nil
 	}
 	if err != nil {
@@ -355,11 +355,11 @@ func (ps *pass) lookup(c context.Context, q db.Querier, dir string, memo map[str
 func gitReason(err error) string {
 	switch {
 	case errors.Is(err, exec.ErrNotFound):
-		return "git absent"
+		return "git missing"
 	case errors.Is(err, context.DeadlineExceeded):
-		return "délai git dépassé"
+		return "git timed out"
 	}
-	return "git en échec"
+	return "git failed"
 }
 
 func link(q db.Querier, session, uid string) error {

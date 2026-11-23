@@ -22,7 +22,7 @@ func LinkCommand(p paths.Paths, version string) error {
 	}
 	link := filepath.Join(p.BinDir(), "paul")
 	if info, err := os.Lstat(link); err == nil && info.Mode()&os.ModeSymlink == 0 {
-		return fmt.Errorf("%s existe et n'est pas un lien : laissé tel quel", link)
+		return fmt.Errorf("%s exists and is not a link: left as is", link)
 	}
 	if err := os.MkdirAll(p.BinDir(), 0o755); err != nil {
 		return err

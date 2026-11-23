@@ -576,7 +576,7 @@ func TestForgetDoesNotBlockOnBusyCheckpoint(t *testing.T) {
 	if time.Since(start) > 2*time.Second {
 		t.Fatalf("forget waited %v on the busy checkpoint", time.Since(start))
 	}
-	if !strings.Contains(logged.String(), "point de contrôle") {
+	if !strings.Contains(logged.String(), "checkpoint busy") {
 		t.Fatalf("log %q", logged.String())
 	}
 }

@@ -12,13 +12,13 @@ import (
 )
 
 var (
-	ErrCycle        = errors.New("cycle dans l'arbre des sujets")
-	ErrSecondParent = errors.New("le sujet a déjà un parent")
-	ErrUserSet      = errors.New("posé par l'utilisateur, le résumeur n'y touche pas")
-	ErrLinkType     = errors.New("type de lien inconnu")
-	ErrSelfMerge    = errors.New("un sujet ne se fusionne pas avec lui-même")
-	ErrSelfLink     = errors.New("un sujet ne se lie pas à lui-même")
-	ErrRemoveParent = errors.New("seul l'utilisateur retire un parent")
+	ErrCycle        = errors.New("cycle in the subject tree")
+	ErrSecondParent = errors.New("the subject already has a parent")
+	ErrUserSet      = errors.New("set by the user, the summarizer does not touch it")
+	ErrLinkType     = errors.New("unknown link type")
+	ErrSelfMerge    = errors.New("a subject cannot merge with itself")
+	ErrSelfLink     = errors.New("a subject cannot link to itself")
+	ErrRemoveParent = errors.New("only the user removes a parent")
 )
 
 type ErrAmbiguousSubject struct {
@@ -31,12 +31,12 @@ func (e *ErrAmbiguousSubject) Error() string {
 	for i, c := range e.Candidates {
 		names[i] = c.Name + " " + c.UID
 	}
-	return fmt.Sprintf("plusieurs sujets portent ce nom : %s (%s)", e.Term, strings.Join(names, ", "))
+	return fmt.Sprintf("several subjects share this name: %s (%s)", e.Term, strings.Join(names, ", "))
 }
 
 type ErrUnknownSubject struct{ Term string }
 
-func (e *ErrUnknownSubject) Error() string { return fmt.Sprintf("sujet inconnu : %s", e.Term) }
+func (e *ErrUnknownSubject) Error() string { return fmt.Sprintf("unknown subject: %s", e.Term) }
 
 // TreeByTerm resolves a name, keyword or uid to that subject and its descendants.
 func TreeByTerm(q db.Querier, term string) ([]string, error) {
