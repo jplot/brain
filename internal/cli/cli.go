@@ -43,7 +43,7 @@ Usage : paul <commande> [options]
   forget point|session <id>     --yes
   index
   rebuild
-  web
+  web                           --no-open
   hook start|prompt|end
   migrate
   sync                          --new-key
@@ -71,7 +71,7 @@ func commands() map[string]command {
 		"search": searchCmd, "souvenirs": souvenirs, "session": session, "day": day,
 		"subjects": subjectsTree, "memo": memoCmd, "summarize": summarize, "forget": forget,
 		"index": indexCmd, "rebuild": rebuild,
-		"web": notYet("web"), "hook": notYet("hook"), "migrate": notYet("migrate"), "sync": notYet("sync"),
+		"web": webCmd, "hook": notYet("hook"), "migrate": notYet("migrate"), "sync": notYet("sync"),
 	}
 }
 

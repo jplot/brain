@@ -532,9 +532,13 @@ func TestOldCommandsAreUnknown(t *testing.T) {
 
 func TestNotYetAvailableCommands(t *testing.T) {
 	f := newFixture(t)
-	for _, name := range []string{"sync", "hook", "web", "migrate"} {
+	for _, name := range []string{"sync", "hook", "migrate"} {
 		contains(t, f.fails(2, name), "pas encore disponible")
 	}
+}
+
+func TestWebIsWired(t *testing.T) {
+	contains(t, newFixture(t).fails(2, "web", "--port", "1"), "web : option inconnue : -port")
 }
 
 func TestNoCommandPrintsUsage(t *testing.T) {

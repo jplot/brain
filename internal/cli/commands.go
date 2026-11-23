@@ -16,6 +16,7 @@ import (
 	"github.com/jplot/brain/internal/search"
 	"github.com/jplot/brain/internal/subjects"
 	"github.com/jplot/brain/internal/summary"
+	"github.com/jplot/brain/internal/web"
 )
 
 var kinds = []string{"topic", "decision", "pending", "fact"}
@@ -552,4 +553,13 @@ func rebuild(e *env, args []string) (int, error) {
 		return 0, err
 	}
 	return report(e, stats), nil
+}
+
+func webCmd(e *env, args []string) (int, error) {
+	fs := newFlags("web")
+	noOpen := fs.Bool("no-open", false, "")
+	if _, err := parseArgs(fs, args); err != nil {
+		return 0, err
+	}
+	return 0, web.Serve(e.p, !*noOpen)
 }

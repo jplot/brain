@@ -1,0 +1,81 @@
+:root {
+  --ink: #15171C; --muted: #565C66; --line: #D9DCE1; --paper: #FFFFFF; --ground: #F3F4F6;
+  --accent: #1B57B0; --field: #8A9099;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+body { margin: 0; background: var(--ground); color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.5; }
+button { font: inherit; cursor: pointer; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+mark { background: #FFE9A8; color: inherit; padding: 0 2px; }
+h1 { font-size: 24px; font-weight: 600; margin: 4px 0 4px; }
+h2 { font-size: 14px; font-weight: 600; color: var(--muted); margin: 24px 0 8px; }
+.lede { margin: 0 0 16px; color: var(--muted); }
+
+.shell { box-sizing: border-box; max-width: 1368px; margin: 0 auto; padding: 24px; display: flex; flex-wrap: wrap; gap: 32px; align-items: flex-start; }
+nav { flex: 1 1 210px; display: flex; flex-direction: column; gap: 4px; }
+main { flex: 999 1 560px; min-width: 0; }
+.brand { font-size: 22px; font-weight: 600; padding: 4px 12px 2px; }
+.tagline { font-size: 13px; color: var(--muted); padding: 0 12px 16px; }
+.menu { display: flex; flex-direction: column; gap: 4px; }
+.menu button { display: flex; justify-content: space-between; gap: 12px; align-items: center; min-height: 44px; padding: 8px 12px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); text-align: left; }
+.menu button[aria-current="page"] { background: var(--ink); color: #FFFFFF; font-weight: 600; }
+.menu .count { font-family: var(--mono); font-size: 13px; }
+
+.pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.pill, .btn { min-height: 44px; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--paper); color: var(--ink); }
+.pill[aria-pressed="true"] { border-color: var(--ink); background: var(--ink); color: #FFFFFF; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); margin-bottom: 16px; max-width: 100%; }
+.field select, .field input { font: inherit; font-size: 15px; color: var(--ink); min-height: 44px; box-sizing: border-box; max-width: 100%; padding: 6px 10px; border: 1px solid var(--field); border-radius: 6px; background: var(--paper); }
+
+.card { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; }
+.days, .stack, .pinned, .tree, .children { display: flex; flex-direction: column; gap: 8px; }
+.session-toggle { width: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 6px; text-align: left; background: none; border: 0; padding: 14px 16px; color: inherit; }
+.line { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; min-width: 0; overflow-wrap: anywhere; }
+.time { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.title { font-weight: 600; }
+.subjects { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+.sub { font-size: 13px; color: var(--muted); }
+.badge { font-size: 12px; font-weight: 500; padding: 1px 8px; border-radius: 4px; background: #E6EEFA; color: var(--accent); }
+
+.summary { overflow-wrap: anywhere; }
+.messages { border-top: 1px solid var(--line); padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+.message { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.message-meta { flex: 0 0 92px; font-size: 13px; color: var(--muted); }
+.message-text { flex: 1 1 320px; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.message-text.tool { font-family: var(--mono); font-size: 13px; color: var(--muted); }
+.more { margin-top: 16px; }
+
+.search-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+.search-field input { font: inherit; font-size: 16px; color: var(--ink); padding: 10px 12px; border: 1px solid var(--field); border-radius: 6px; background: var(--paper); }
+.result-count { font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+.hit { padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; overflow-wrap: anywhere; }
+.hit-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: 13px; color: var(--muted); }
+.hit-head .subjects { color: var(--ink); }
+
+.alert { margin: 0 0 16px; padding: 10px 12px; border: 1px solid #A3470A; border-radius: 6px; background: #FBEEE4; color: var(--ink); }
+.alert[hidden] { display: none; }
+.empty { color: var(--muted); }
+.empty[hidden] { display: none; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.forget { display: flex; flex-direction: column; gap: 8px; }
+.confirm { font-weight: 500; }
+.btn.strong { border-color: var(--ink); background: var(--ink); color: #FFFFFF; }
+.btn.link { color: var(--accent); }
+.memory { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; overflow-wrap: anywhere; }
+.memory.closed { opacity: 0.62; }
+.memory .kind { font-weight: 600; color: var(--ink); }
+.pill.level { width: 44px; padding: 0; }
+.edit-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.edit-field input { font: inherit; font-size: 16px; color: var(--ink); padding: 8px 10px; border: 1px solid var(--field); border-radius: 6px; min-height: 28px; }
+.memo { margin: 0; background: var(--ink); color: var(--ground); border-radius: 8px; padding: 18px 20px; font-family: var(--mono); font-size: 13.5px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.memo[hidden] { display: none; }
+
+.children { margin-left: 20px; padding-left: 12px; border-left: 2px solid var(--line); }
+.subject { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; overflow-wrap: anywhere; }
+.subject-name { font-weight: 600; font-size: 15px; color: var(--ink); }
+.synthesis { margin: 0; }
+.links { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.links li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; }
+.panel { border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 4px; }
