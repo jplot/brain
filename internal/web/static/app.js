@@ -6,8 +6,8 @@ const SEARCH_DELAY = 250;
 const LOCALE = "en-GB";
 const ROLES = { user: "you", claude: "Claude", tool: "tool", subagent: "subagent" };
 const VIEWS = [
-  ["fil", "Feed"], ["souvenirs", "Memories"], ["recherche", "Search"],
-  ["memo", "Memo"], ["sujets", "Subjects"],
+  ["feed", "Feed"], ["memories", "Memories"], ["search", "Search"],
+  ["memo", "Memo"], ["subjects", "Subjects"],
 ];
 const KIND_TABS = [["all", "All"], ["decision", "Decisions"], ["pending", "Pending"], ["fact", "Facts about you"]];
 const KINDS = { topic: "Topic", decision: "Decision", pending: "Pending", fact: "Fact about you" };
@@ -16,7 +16,7 @@ const LEVELS = [1, 2, 3, 4, 5];
 const MEMORY_PAGE = 50;
 
 const state = {
-  view: "fil", subject: "", query: "", notice: "", kind: "all", focus: null, memoSubject: "", counts: null,
+  view: "feed", subject: "", query: "", notice: "", kind: "all", focus: null, memoSubject: "", counts: null,
   tree: [], subjects: [],
 };
 const memoryUi = { editing: {}, draft: {} };
@@ -158,7 +158,7 @@ async function refreshCounts() {
 function renderMenu() {
   const menu = document.getElementById("menu");
   const counted = state.counts
-    ? { fil: state.counts.sessions, souvenirs: state.counts.points, sujets: state.counts.subjects } : {};
+    ? { feed: state.counts.sessions, memories: state.counts.points, subjects: state.counts.subjects } : {};
   menu.replaceChildren(...VIEWS.map(([view, text]) => h("button", {
     type: "button", "aria-current": state.view === view ? "page" : "false",
     onclick: () => { state.view = view; state.focus = null; show(); },
@@ -169,7 +169,7 @@ function show() {
   epoch += 1;
   renderMenu();
   const views = {
-    fil: showFil, souvenirs: showMemories, recherche: showSearch, memo: showMemo, sujets: showSubjects,
+    feed: showFeed, memories: showMemories, search: showSearch, memo: showMemo, subjects: showSubjects,
   };
   views[state.view](epoch);
 }
@@ -260,7 +260,7 @@ function sessionCard(row, startOpen, gone) {
   return card;
 }
 
-function showFil(mine) {
+function showFeed(mine) {
   const alert = alertBox(state.notice);
   const days = h("div", { class: "days" });
   const more = h("div", { class: "more" });
@@ -381,7 +381,7 @@ function pointCard(point, refresh, gone) {
       }, "Close the point") : null,
       h("button", {
         type: "button", class: "btn link", "data-key": `conversation-${point.id}`,
-        onclick: () => { state.focus = point.session_id; state.view = "fil"; state.subject = ""; show(); },
+        onclick: () => { state.focus = point.session_id; state.view = "feed"; state.subject = ""; show(); },
       }, "View the conversation"),
       forgetControl("Forget", "Permanent.", async () => {
         try {
@@ -652,7 +652,7 @@ function subjectCard(node, refresh, redraw) {
       }, "Remove")))) : null,
     h("div", { class: "actions" }, actions, h("button", {
       type: "button", class: "btn link", "data-key": `memories-${uid}`,
-      onclick: () => { state.subject = uid; state.view = "souvenirs"; show(); },
+      onclick: () => { state.subject = uid; state.view = "memories"; show(); },
     }, "View the memories")),
     open ? subjectPanel(node, open, refresh, redraw) : null);
 }
