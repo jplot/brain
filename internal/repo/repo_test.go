@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -315,6 +316,33 @@ func TestOrphanWorktreeKeepsMainIdentity(t *testing.T) {
 	info, ok, err := Of(bg, wt)
 	if err != nil || !ok || info != (Info{Identity: "commit:" + sha, Name: "atelier"}) {
 		t.Fatalf("%+v, %v, %v", info, ok, err)
+	}
+}
+
+func TestOrphanBranchWithSmallerRootDoesNotMoveIdentity(t *testing.T) {
+	repo := makeRepo(t, filepath.Join(t.TempDir(), "atelier"))
+	sha := rootCommit(t, repo, "debut")
+	tree := git(t, repo, "mktree")
+	var smaller string
+	for i := 0; smaller == ""; i++ {
+		cmd := exec.Command("git", "-C", repo, "hash-object", "-t", "commit", "-w", "--stdin")
+		cmd.Stdin = strings.NewReader(fmt.Sprintf("tree %s\nauthor exemple <exemple@example.org> 1700000000 +0000\ncommitter exemple <exemple@example.org> 1700000000 +0000\n\npages %d\n", tree, i))
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c := strings.TrimSpace(string(out)); c < sha {
+			smaller = c
+		}
+	}
+	git(t, repo, "update-ref", "refs/heads/pages", smaller)
+	wt := filepath.Join(t.TempDir(), "pages")
+	git(t, repo, "worktree", "add", "-q", wt, "pages")
+	for _, dir := range []string{repo, wt} {
+		info, ok, err := Of(bg, dir)
+		if err != nil || !ok || info.Identity != "commit:"+sha {
+			t.Fatalf("%s: %+v, %v, %v", dir, info, ok, err)
+		}
 	}
 }
 

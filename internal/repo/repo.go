@@ -77,9 +77,13 @@ func Of(ctx context.Context, path string) (Info, bool, error) {
 	if id, ok := Normalize(remote); ok {
 		return Info{Identity: id, Name: id[strings.LastIndex(id, "/")+1:]}, true, nil
 	}
-	// All refs, from the main repo: HEAD alone changes with the checked-out
-	// branch (an orphan worktree has none) and would change the identity.
-	roots, ok, err := runGit(ctx, main, "rev-list", "--max-parents=0", "--all")
+	// The main repo's HEAD, not the worktree's (an orphan worktree has none);
+	// --all only when that HEAD is unborn, since an orphan ref such as gh-pages
+	// would otherwise move the smallest root.
+	roots, ok, err := runGit(ctx, main, "rev-list", "--max-parents=0", "HEAD")
+	if err == nil && !ok {
+		roots, ok, err = runGit(ctx, main, "rev-list", "--max-parents=0", "--all")
+	}
 	if err != nil || !ok || roots == "" {
 		return Info{}, false, err
 	}
