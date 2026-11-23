@@ -34,8 +34,8 @@ func Normalize(remote string) (string, bool) {
 		host, rest = before[strings.LastIndex(before, "@")+1:], after
 	} else {
 		host, rest, _ = strings.Cut(s, "/")
-		// git takes a remote like repos/x/y as a local path: only a dotted host
-		// (GitHub.com/owner/repo) makes a schemeless remote a URL.
+		// git reads this form as a local path; paul still takes GitHub.com/owner/repo
+		// as a URL, but only with a dotted host, so repos/x/y stays a path.
 		if !strings.Contains(host, ".") {
 			return "", false
 		}
@@ -50,13 +50,15 @@ func Normalize(remote string) (string, bool) {
 type identity struct{ id, name, owner string }
 
 type locator struct {
-	q     db.Querier
-	roots []string
+	ctx      context.Context
+	q        db.Querier
+	roots    []string
+	degraded bool
 }
 
 // git reports resolved paths (/private/var for /var on macOS), so a root
 // reached through a symlink is matched under both spellings.
-func newLocator(q db.Querier, cfg config.Config) locator {
+func newLocator(ctx context.Context, q db.Querier, cfg config.Config) *locator {
 	var roots []string
 	for _, r := range cfg.Roots {
 		r = filepath.Clean(r)
@@ -65,12 +67,20 @@ func newLocator(q db.Querier, cfg config.Config) locator {
 			roots = append(roots, real)
 		}
 	}
-	return locator{q, roots}
+	return &locator{ctx: ctx, q: q, roots: roots}
 }
 
-func (l locator) locate(cwd string) (dir string, p identity, frozen bool, err error) {
+// All git calls of one localization share one deadline (a hook has 1 s;
+// three calls of 5 s would take 15). The deadline bounds git only, so the
+// folder rules still answer from the database once it has passed.
+func (l *locator) locate(cwd string) (dir string, p identity, frozen bool, err error) {
 	if p.id, frozen, err = l.frozen(cwd); err != nil || frozen {
 		return cwd, p, frozen, err
+	}
+	if _, ok := l.ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		l.ctx, cancel = context.WithTimeout(l.ctx, gitTimeout)
+		defer cancel()
 	}
 	dir, repo := l.projectDir(cwd)
 	if dir != cwd {
@@ -81,16 +91,16 @@ func (l locator) locate(cwd string) (dir string, p identity, frozen bool, err er
 	return dir, l.identity(dir, repo), false, nil
 }
 
-func (l locator) frozen(path string) (string, bool, error) {
+func (l *locator) frozen(path string) (string, bool, error) {
 	var id string
-	err := l.q.QueryRowContext(ctx, "SELECT project_id FROM project_paths WHERE path = ?", path).Scan(&id)
+	err := l.q.QueryRowContext(background, "SELECT project_id FROM project_paths WHERE path = ?", path).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
 	return id, err == nil, err
 }
 
-func (l locator) projectDir(cwd string) (string, bool) {
+func (l *locator) projectDir(cwd string) (string, bool) {
 	if l.isRoot(cwd) {
 		return cwd, false
 	}
@@ -106,12 +116,12 @@ func (l locator) projectDir(cwd string) (string, bool) {
 	return dir, false
 }
 
-func (l locator) identity(dir string, repo bool) identity {
+func (l *locator) identity(dir string, repo bool) identity {
 	if l.isRoot(dir) {
 		return identity{id: Roots, name: Roots}
 	}
 	if repo {
-		if id, ok := Normalize(git(dir, "remote", "get-url", "origin")); ok {
+		if id, ok := Normalize(l.git(dir, "remote", "get-url", "origin")); ok {
 			parts := strings.Split(id, "/")
 			return identity{id: id, name: parts[len(parts)-1], owner: parts[1]}
 		}
@@ -124,18 +134,18 @@ func (l locator) identity(dir string, repo bool) identity {
 
 // A worktree's common dir is <main>/.git; a bare repository or a separate
 // git dir (submodule) has none, so the work tree itself is the project.
-func (l locator) repoTop(dir string) string {
-	common := git(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+func (l *locator) repoTop(dir string) string {
+	common := l.git(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	if common == "" {
 		return ""
 	}
 	if filepath.Base(common) == ".git" {
 		return filepath.Dir(common)
 	}
-	return git(dir, "rev-parse", "--show-toplevel")
+	return l.git(dir, "rev-parse", "--show-toplevel")
 }
 
-func (l locator) folderProject(cwd string) string {
+func (l *locator) folderProject(cwd string) string {
 	root, rel, ok := l.under(cwd)
 	if !ok {
 		return cwd
@@ -162,7 +172,7 @@ func worktreeOwner(root, name string) string {
 	return best
 }
 
-func (l locator) isRoot(path string) bool {
+func (l *locator) isRoot(path string) bool {
 	for _, r := range l.roots {
 		if path == r {
 			return true
@@ -171,20 +181,29 @@ func (l locator) isRoot(path string) bool {
 	return false
 }
 
-func (l locator) under(path string) (root, rel string, ok bool) {
+// The deepest root wins: with roots ~/code and ~/code/work, ~/code/work/x
+// is the project x, not the root work.
+func (l *locator) under(path string) (root, rel string, ok bool) {
 	for _, r := range l.roots {
-		if rel, err := filepath.Rel(r, path); err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return r, rel, true
+		rr, err := filepath.Rel(r, path)
+		inside := err == nil && rr != "." && rr != ".." && !strings.HasPrefix(rr, ".."+string(filepath.Separator))
+		if inside && (!ok || len(r) > len(root)) {
+			root, rel, ok = r, rr, true
 		}
 	}
-	return "", "", false
+	return root, rel, ok
 }
 
-func git(dir string, args ...string) string {
-	timeout, cancel := context.WithTimeout(ctx, gitTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(timeout, "git", append([]string{"-C", dir}, args...)...).Output()
+// git dies with 128 (not a repository) and get-url exits with 2 (no such
+// remote); any other failure, such as the xcrun shim of a Mac without
+// Command Line Tools, a missing git or the deadline, means no answer.
+func (l *locator) git(dir string, args ...string) string {
+	out, err := exec.CommandContext(l.ctx, "git", append([]string{"-C", dir}, args...)...).Output()
 	if err != nil {
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 128 && exit.ExitCode() != 2 {
+			l.degraded = true
+		}
 		return ""
 	}
 	return strings.TrimSpace(string(out))

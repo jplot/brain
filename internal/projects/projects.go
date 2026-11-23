@@ -44,18 +44,21 @@ type Project struct {
 	ID, Name, Label, LabelBy, UpdatedAt string
 }
 
-var ctx = context.Background()
+var background = context.Background()
 
 func now() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z") }
 
-func Resolve(tx *sql.Tx, cfg config.Config, cwd string) (string, error) {
+// A degraded localization writes nothing: freezing the folder-rule identity
+// of a repository seen without git would split it from its remote identity.
+func Resolve(ctx context.Context, tx *sql.Tx, cfg config.Config, cwd string) (string, error) {
 	cwd = filepath.Clean(cwd)
-	dir, p, frozen, err := newLocator(tx, cfg).locate(cwd)
-	if err != nil {
-		return "", err
+	l := newLocator(ctx, tx, cfg)
+	dir, p, frozen, err := l.locate(cwd)
+	if err != nil || l.degraded {
+		return p.id, err
 	}
 	if !frozen {
-		_, err := tx.ExecContext(ctx, `INSERT INTO projects(id, name, label, label_by, updated_at)
+		_, err := tx.ExecContext(background, `INSERT INTO projects(id, name, label, label_by, updated_at)
 			VALUES (?, ?, ?, 'rule', ?) ON CONFLICT(id) DO NOTHING`, p.id, p.name, proposedLabel(cfg, p.owner), now())
 		if err != nil {
 			return "", err
@@ -64,15 +67,15 @@ func Resolve(tx *sql.Tx, cfg config.Config, cwd string) (string, error) {
 	// The project dir is frozen too: a subfolder or worktree first met after
 	// a remote rename must still join the identity of its repository.
 	for _, path := range []string{cwd, dir} {
-		if _, err := tx.ExecContext(ctx, "INSERT INTO project_paths(path, project_id) VALUES (?, ?) ON CONFLICT(path) DO NOTHING", path, p.id); err != nil {
+		if _, err := tx.ExecContext(background, "INSERT INTO project_paths(path, project_id) VALUES (?, ?) ON CONFLICT(path) DO NOTHING", path, p.id); err != nil {
 			return "", err
 		}
 	}
 	return p.id, nil
 }
 
-func Locate(q db.Querier, cfg config.Config, cwd string) (string, error) {
-	_, p, _, err := newLocator(q, cfg).locate(filepath.Clean(cwd))
+func Locate(ctx context.Context, q db.Querier, cfg config.Config, cwd string) (string, error) {
+	_, p, _, err := newLocator(ctx, q, cfg).locate(filepath.Clean(cwd))
 	return p.id, err
 }
 
@@ -87,7 +90,7 @@ func proposedLabel(cfg config.Config, owner string) string {
 
 func exists(q db.Querier, id string) (bool, error) {
 	var n int
-	err := q.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE id = ?", id).Scan(&n)
+	err := q.QueryRowContext(background, "SELECT count(*) FROM projects WHERE id = ?", id).Scan(&n)
 	return n > 0, err
 }
 
@@ -106,7 +109,7 @@ func SetLabel(q db.Querier, id, label string) error {
 	if err := requireKnown(q, id); err != nil {
 		return err
 	}
-	_, err := q.ExecContext(ctx, "UPDATE projects SET label = ?, label_by = 'user', updated_at = ? WHERE id = ?", label, now(), id)
+	_, err := q.ExecContext(background, "UPDATE projects SET label = ?, label_by = 'user', updated_at = ? WHERE id = ?", label, now(), id)
 	return err
 }
 
@@ -136,7 +139,7 @@ func Grant(q db.Querier, reader, target string, both bool) error {
 		return err
 	}
 	for _, p := range list {
-		_, err := q.ExecContext(ctx, `INSERT INTO accesses(reader, target, active, updated_at) VALUES (?, ?, 1, ?)
+		_, err := q.ExecContext(background, `INSERT INTO accesses(reader, target, active, updated_at) VALUES (?, ?, 1, ?)
 			ON CONFLICT(reader, target) DO UPDATE SET active = 1, updated_at = excluded.updated_at WHERE active = 0`,
 			p[0], p[1], now())
 		if err != nil {
@@ -152,7 +155,7 @@ func Revoke(q db.Querier, reader, target string, both bool) error {
 		return err
 	}
 	for _, p := range list {
-		_, err := q.ExecContext(ctx, "UPDATE accesses SET active = 0, updated_at = ? WHERE reader = ? AND target = ? AND active = 1",
+		_, err := q.ExecContext(background, "UPDATE accesses SET active = 0, updated_at = ? WHERE reader = ? AND target = ? AND active = 1",
 			now(), p[0], p[1])
 		if err != nil {
 			return err
@@ -174,7 +177,7 @@ func Accessible(q db.Querier, reader string) (map[string]bool, error) {
 }
 
 func List(q db.Querier) ([]Project, error) {
-	rows, err := q.QueryContext(ctx, "SELECT id, name, label, label_by, updated_at FROM projects ORDER BY name, id")
+	rows, err := q.QueryContext(background, "SELECT id, name, label, label_by, updated_at FROM projects ORDER BY name, id")
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +202,7 @@ func Find(q db.Querier, ref string) (string, error) {
 		return ref, nil
 	}
 	var id string
-	switch err := q.QueryRowContext(ctx, "SELECT project_id FROM project_paths WHERE path = ?", ref).Scan(&id); {
+	switch err := q.QueryRowContext(background, "SELECT project_id FROM project_paths WHERE path = ?", ref).Scan(&id); {
 	case err == nil:
 		return id, nil
 	case !errors.Is(err, sql.ErrNoRows):
@@ -223,7 +226,7 @@ func Find(q db.Querier, ref string) (string, error) {
 }
 
 func column(q db.Querier, query string, args ...any) ([]string, error) {
-	rows, err := q.QueryContext(ctx, query, args...)
+	rows, err := q.QueryContext(background, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -239,8 +242,7 @@ func column(q db.Querier, query string, args ...any) ([]string, error) {
 	return out, rows.Err()
 }
 
-// Same suggestions as the Python version's difflib.get_close_matches:
-// at most 3 names whose ratio reaches 0.6, best first.
+// Ports difflib.get_close_matches: suggestions stay the ones users already got.
 func closeMatches(word string, names []string) []string {
 	type scored struct {
 		score float64
@@ -248,7 +250,7 @@ func closeMatches(word string, names []string) []string {
 	}
 	var found []scored
 	for _, n := range names {
-		if s := ratio(word, n); s >= 0.6 {
+		if s := ratio(n, word); s >= 0.6 {
 			found = append(found, scored{s, n})
 		}
 	}

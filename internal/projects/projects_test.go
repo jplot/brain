@@ -1,6 +1,7 @@
 package projects
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"os"
@@ -15,6 +16,8 @@ import (
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/paths"
 )
+
+var bg = context.Background()
 
 var labels = map[string]string{"mon-compte": "personal", "mon-employeur": "work"}
 
@@ -44,7 +47,7 @@ func (f *fixture) resolve(cwd string) string {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	id, err := Resolve(tx, f.cfg, cwd)
+	id, err := Resolve(bg, tx, f.cfg, cwd)
 	if err != nil {
 		tx.Rollback()
 		f.t.Fatal(err)
@@ -287,41 +290,106 @@ func TestIdentityFrozenAfterRemoteRename(t *testing.T) {
 	expect(t, f.resolve(filepath.Join(repo, "src")), "github.com/mon-compte/atelier")
 	wt := addWorktree(t, repo, filepath.Join(f.root, "worktrees", "atelier-fix"))
 	expect(t, f.resolve(wt), "github.com/mon-compte/atelier")
-	located, err := Locate(f.db, f.cfg, mkdir(t, filepath.Join(repo, "doc")))
+	located, err := Locate(bg, f.db, f.cfg, mkdir(t, filepath.Join(repo, "doc")))
 	if err != nil {
 		t.Fatal(err)
 	}
 	expect(t, located, "github.com/mon-compte/atelier")
 }
 
-func TestWithoutGitOnlyFolderRules(t *testing.T) {
-	f := newFixture(t)
-	repo := makeRepoWithRemote(t, filepath.Join(f.root, "atelier"), "git@github.com:mon-compte/atelier.git")
-	t.Setenv("PATH", "")
-	expect(t, f.resolve(filepath.Join(repo, "src")), "dir:atelier")
-}
-
-func TestGitTimeoutFallsBackToFolderRules(t *testing.T) {
-	f := newFixture(t)
+func fakeGit(t *testing.T, script string) {
+	t.Helper()
 	bin := mkdir(t, filepath.Join(t.TempDir(), "bin"))
-	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nexec /bin/sleep 10\n"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\n"+script+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
+}
+
+func TestDegradedFirstEncounterFreezesNothing(t *testing.T) {
+	for name, degrade := range map[string]func(t *testing.T){
+		"git missing": func(t *testing.T) { t.Setenv("PATH", "") },
+		"git broken":  func(t *testing.T) { fakeGit(t, "exit 1") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			repo := makeRepoWithRemote(t, filepath.Join(f.root, "atelier"), "git@github.com:mon-compte/atelier.git")
+			path := os.Getenv("PATH")
+			degrade(t)
+			expect(t, f.resolve(filepath.Join(repo, "src")), "dir:atelier")
+			if n := f.count("projects") + f.count("project_paths"); n != 0 {
+				t.Fatalf("%d rows written", n)
+			}
+			t.Setenv("PATH", path)
+			expect(t, f.resolve(filepath.Join(repo, "src")), "github.com/mon-compte/atelier")
+			expect(t, f.resolve(repo), "github.com/mon-compte/atelier")
+		})
+	}
+}
+
+func TestDeadlineBoundsAllGitCalls(t *testing.T) {
+	f := newFixture(t)
+	cwd := mkdir(t, filepath.Join(f.root, "atelier", "src"))
+	fakeGit(t, "exec /bin/sleep 10")
+	ctx, cancel := context.WithTimeout(bg, 50*time.Millisecond)
+	defer cancel()
+	tx, err := f.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	id, err := Resolve(ctx, tx, f.cfg, cwd)
+	elapsed := time.Since(start)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err != nil || id != "dir:atelier" || elapsed > 500*time.Millisecond {
+		t.Fatalf("%q, %v after %v", id, err, elapsed)
+	}
+	if n := f.count("projects") + f.count("project_paths"); n != 0 {
+		t.Fatalf("%d rows written", n)
+	}
+}
+
+func TestDefaultGitBudgetIsShared(t *testing.T) {
+	f := newFixture(t)
+	cwd := mkdir(t, filepath.Join(f.root, "atelier", "src"))
+	fakeGit(t, "exec /bin/sleep 10")
 	saved := gitTimeout
-	gitTimeout = 50 * time.Millisecond
+	gitTimeout = 200 * time.Millisecond
 	t.Cleanup(func() { gitTimeout = saved })
 	start := time.Now()
-	expect(t, f.resolve(mkdir(t, filepath.Join(f.root, "atelier", "src"))), "dir:atelier")
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("took %v", elapsed)
+	id, err := Locate(bg, f.db, f.cfg, cwd)
+	if elapsed := time.Since(start); err != nil || id != "dir:atelier" || elapsed > 350*time.Millisecond {
+		t.Fatalf("%q, %v after %v", id, err, elapsed)
+	}
+}
+
+func TestNestedRootsDeepestWins(t *testing.T) {
+	f := newFixture(t)
+	sub := mkdir(t, filepath.Join(f.root, "sub"))
+	x := mkdir(t, filepath.Join(sub, "x", "src"))
+	y := mkdir(t, filepath.Join(f.root, "y"))
+	for _, roots := range [][]string{{f.root, sub}, {sub, f.root}} {
+		cfg := f.cfg
+		cfg.Roots = roots
+		for cwd, want := range map[string]string{x: "dir:x", y: "dir:y", sub: Roots, f.root: Roots} {
+			got, err := Locate(bg, f.db, cfg, cwd)
+			if err != nil || got != want {
+				t.Errorf("roots %v: Locate(%s) = %q, %v; want %q", roots, cwd, got, err, want)
+			}
+		}
+		s, err := ScopeFor(bg, f.db, cfg, x)
+		if err != nil || s.Projects == nil || s.Current != "dir:x" {
+			t.Errorf("roots %v: scope %+v, %v", roots, s, err)
+		}
 	}
 }
 
 func TestLocateWritesNothing(t *testing.T) {
 	f := newFixture(t)
 	elsewhere := mkdir(t, filepath.Join(t.TempDir(), "ailleurs"))
-	id, err := Locate(f.db, f.cfg, elsewhere)
+	id, err := Locate(bg, f.db, f.cfg, elsewhere)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,6 +629,12 @@ func TestCloseMatchesLikeDifflib(t *testing.T) {
 	if !slices.Equal(got, []string{"abg", "abf", "abe"}) {
 		t.Fatal(got)
 	}
+	for word, want := range map[string][]string{"paul": {"upal"}, "beace": {"bcdeb"}, "ecac": nil} {
+		candidates := map[string][]string{"paul": {"lapu", "upal"}, "beace": {"bcdeb"}, "ecac": {"acadac"}}[word]
+		if got := closeMatches(word, candidates); !slices.Equal(got, want) {
+			t.Errorf("closeMatches(%q, %v) = %v, want %v", word, candidates, got, want)
+		}
+	}
 }
 
 func TestList(t *testing.T) {
@@ -583,14 +657,14 @@ func TestScope(t *testing.T) {
 	if err := Grant(f.db, a, b, false); err != nil {
 		t.Fatal(err)
 	}
-	s, err := ScopeFor(f.db, f.cfg, filepath.Join(f.root, "a"))
+	s, err := ScopeFor(bg, f.db, f.cfg, filepath.Join(f.root, "a"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if s.Current != a || len(s.Projects) != 2 || !s.Projects[a] || !s.Projects[b] {
 		t.Fatalf("%+v", s)
 	}
-	s, err = ScopeFor(f.db, f.cfg, f.root)
+	s, err = ScopeFor(bg, f.db, f.cfg, f.root)
 	if err != nil || s.Projects != nil || s.Current != Roots {
 		t.Fatalf("%+v %v", s, err)
 	}

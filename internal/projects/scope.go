@@ -1,6 +1,8 @@
 package projects
 
 import (
+	"context"
+
 	"github.com/jplot/brain/internal/config"
 	"github.com/jplot/brain/internal/db"
 )
@@ -12,8 +14,8 @@ type Scope struct {
 
 var Everything = Scope{}
 
-func ScopeFor(q db.Querier, cfg config.Config, cwd string) (Scope, error) {
-	current, err := Locate(q, cfg, cwd)
+func ScopeFor(ctx context.Context, q db.Querier, cfg config.Config, cwd string) (Scope, error) {
+	current, err := Locate(ctx, q, cfg, cwd)
 	if err != nil {
 		return Scope{}, err
 	}
