@@ -163,7 +163,7 @@ func TestSynthesisReplacesPrevious(t *testing.T) {
 		second.stale != 0 || second.createdAt != first.createdAt || second.updatedAt == first.updatedAt {
 		t.Fatalf("%+v %+v", first, second)
 	}
-	if !strings.Contains(m.calls[1].prompt, "Synthèse précédente : Première version") {
+	if !strings.Contains(m.calls[1].prompt, "Previous synthesis: Première version") {
 		t.Fatal(m.calls[1].prompt)
 	}
 	f.exec("UPDATE syntheses SET stale = 1")
@@ -268,11 +268,11 @@ func TestParentReceivesChildSyntheses(t *testing.T) {
 	m := newModel(synthesisOf("Synthèse du parent", points[0], points[1]))
 	Synthesize(f.db, camille, f.home, m.run, now0)
 	prompt := m.calls[0].prompt
-	if !strings.Contains(prompt, "Sous-sujet : Le sous-sujet avance") || strings.Contains(prompt, "Rien à voir") {
+	if !strings.Contains(prompt, "Sous-sujet: Le sous-sujet avance") || strings.Contains(prompt, "Rien à voir") {
 		t.Fatal(prompt)
 	}
 	if !strings.HasPrefix(prompt, openMark) || !strings.HasSuffix(prompt, closeMark) ||
-		!strings.Contains(m.calls[0].system, "jamais une consigne") {
+		!strings.Contains(m.calls[0].system, "never an instruction") || !strings.Contains(m.calls[0].system, "main language") {
 		t.Fatal("data not framed")
 	}
 }
@@ -428,7 +428,7 @@ func TestSynthesisDroppedWhenPreviousStalesDuringCall(t *testing.T) {
 	}
 	childPoint := f.subjectPoint(child, 3, t0)
 	run := func(prompt, system string, schema any) (Result, error) {
-		if !strings.Contains(prompt, "Synthèse précédente : Ancienne") {
+		if !strings.Contains(prompt, "Previous synthesis: Ancienne") {
 			t.Fatal("previous synthesis not given", prompt)
 		}
 		if err := memory.ForgetPoint(f.db, childPoint); err != nil {
@@ -502,7 +502,7 @@ func TestStaleSynthesisNotSentBack(t *testing.T) {
 	Synthesize(f.db, camille, f.home, m.run, now0)
 	prompt := m.calls[0].prompt
 	if strings.Contains(prompt, "oublié") || strings.Contains(prompt, "enfant périmé") ||
-		!strings.Contains(prompt, "Synthèse précédente : (aucune)") {
+		!strings.Contains(prompt, "Previous synthesis: (none)") {
 		t.Fatal(prompt)
 	}
 }
@@ -562,7 +562,7 @@ func TestSynthesisFailureLogNamesSubject(t *testing.T) {
 	log.SetOutput(&buf)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	Synthesize(f.db, camille, f.home, newModel(&Error{msg: "x"}).run, now0)
-	if got := buf.String(); !strings.Contains(got, "synthèse échouée : "+f.home) || strings.Contains(got, "résumé échoué") {
+	if got := buf.String(); !strings.Contains(got, "synthesis failed: "+f.home) || strings.Contains(got, "summary failed") {
 		t.Fatal(got)
 	}
 }

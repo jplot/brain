@@ -138,9 +138,9 @@ func (c *calls) call(prompt, system string, schema any) (map[string]any, error) 
 		cost = e.Cost
 	}
 	if cost == nil {
-		log.Print("coût d'un appel à claude : inconnu")
+		log.Print("cost of a claude call: unknown")
 	} else {
-		log.Printf("coût d'un appel à claude : $%.4f", *cost)
+		log.Printf("cost of a claude call: $%.4f", *cost)
 		c.cost += *cost
 	}
 	return result.Data, err
@@ -196,7 +196,7 @@ func checkShape(output map[string]any) error {
 		valid = valid && (!present || list)
 	}
 	if !valid {
-		return &Error{msg: "sortie du modèle invalide"}
+		return &Error{msg: "model output invalid"}
 	}
 	return nil
 }
@@ -325,7 +325,7 @@ func merge(c *calls, system string, data promptData, outputs []map[string]any) (
 		}
 		batches = append(batches, current)
 		if len(batches) == len(outputs) {
-			return nil, &Error{msg: "fusion impossible : résumés partiels trop volumineux"}
+			return nil, &Error{msg: "merge impossible: partial summaries too large"}
 		}
 		outputs = nil
 		for _, batch := range batches {
@@ -337,9 +337,9 @@ func merge(c *calls, system string, data promptData, outputs []map[string]any) (
 			if err != nil {
 				return nil, err
 			}
-			merged, err := c.summary(prompt(data, "Résumés partiels à fusionner, en JSON ; new:<n> y désigne new_subjects[n],"+
-				" liste commune à tous ; le new de chaque supersedes est le rang dans les points de son propre partiel,"+
-				" à partir de 0 :\n"+body), system)
+			merged, err := c.summary(prompt(data, "Partial summaries to merge, in JSON; new:<n> there means new_subjects[n],"+
+				" a list shared by all; the new of each supersedes is the rank in the points of its own partial,"+
+				" from 0:\n"+body), system)
 			if err != nil {
 				return nil, err
 			}
@@ -389,14 +389,14 @@ func countAttempt(conn *sql.DB, sessionID string, now time.Time) (counted bool, 
 }
 
 func fail(conn *sql.DB, sessionID string, now time.Time, c *calls, err error) Outcome {
-	log.Printf("résumé échoué : %s (%T)", sessionID, err)
+	log.Printf("summary failed: %s (%T)", sessionID, err)
 	touchFailure(conn, sessionID, now)
 	return Outcome{Status: Failed, CostUSD: c.cost, SessionID: sessionID}
 }
 
 func touchFailure(conn *sql.DB, key string, now time.Time) {
 	if _, err := conn.Exec("UPDATE summary_failures SET last_at = ? WHERE session_id = ?", db.Stamp(now), key); err != nil {
-		log.Printf("date d'échec non mise à jour : %s (%T)", key, err)
+		log.Printf("failure date not updated: %s (%T)", key, err)
 	}
 }
 
@@ -635,7 +635,7 @@ func summarize(conn *sql.DB, user, sessionID string, c *calls, now time.Time) (O
 		if m.role == "tool" {
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("[%s] %s : %s", m.ts, m.role, m.text))
+		lines = append(lines, fmt.Sprintf("[%s] %s: %s", m.ts, m.role, m.text))
 		texts = append(texts, m.text)
 		timestamps[m.ts] = true
 	}
@@ -643,7 +643,7 @@ func summarize(conn *sql.DB, user, sessionID string, c *calls, now time.Time) (O
 	if slices.ContainsFunc(rows, func(m message) bool { return m.role == "user" }) {
 		parts := chunks(lines)
 		if len(parts) > MaxChunks {
-			log.Printf("épisode trop long : %s (%d morceaux)", sessionID, len(parts))
+			log.Printf("episode too long: %s (%d chunks)", sessionID, len(parts))
 			status = TooLong
 		} else {
 			data, err := gather(conn, sessionID, strings.Join(texts, "\n"), now)
@@ -652,7 +652,7 @@ func summarize(conn *sql.DB, user, sessionID string, c *calls, now time.Time) (O
 			}
 			counted, err := countAttempt(conn, sessionID, now)
 			if err != nil {
-				log.Printf("résumé différé : %s (%T)", sessionID, err)
+				log.Printf("summary deferred: %s (%T)", sessionID, err)
 				return Outcome{Status: Busy}, nil
 			}
 			if !counted {
@@ -717,7 +717,7 @@ func summarizeParts(c *calls, user, sessionID string, parts []string, data promp
 	sys := system(user)
 	var outputs []map[string]any
 	for _, part := range parts {
-		output, err := c.summary(prompt(data, "Conversation :\n"+part), sys)
+		output, err := c.summary(prompt(data, "Conversation:\n"+part), sys)
 		if err != nil {
 			return err
 		}
@@ -738,7 +738,7 @@ func summarizeParts(c *calls, user, sessionID string, parts []string, data promp
 		}
 	}
 	if len(e.points) < len(raw) {
-		log.Printf("points rejetés : %s (%d sur %d)", sessionID, len(raw)-len(e.points), len(raw))
+		log.Printf("points rejected: %s (%d of %d)", sessionID, len(raw)-len(e.points), len(raw))
 	}
 	closes, _ := output["closes"].([]any)
 	for _, v := range closes {
@@ -983,7 +983,7 @@ func store(conn *sql.DB, sessionID string, e episode, created string) (written b
 		return nil
 	})
 	if ignored > 0 {
-		log.Printf("propositions ignorées : %s (%d)", sessionID, ignored)
+		log.Printf("proposals ignored: %s (%d)", sessionID, ignored)
 	}
 	return written, err
 }
@@ -1028,14 +1028,14 @@ func RefreshStale(conn *sql.DB, run Runner) (int, float64) {
 	c := &calls{run: run}
 	stale, err := staleEpisodes(conn)
 	if err != nil {
-		log.Printf("résumés périmés illisibles (%T)", err)
+		log.Printf("stale summaries unreadable (%T)", err)
 		return 0, 0
 	}
 	refreshed := 0
 	for _, episode := range stale {
 		done, err := refresh(conn, c, episode)
 		if err != nil {
-			log.Printf("résumé périmé non refait : %T", err)
+			log.Printf("stale summary not redone: %T", err)
 		}
 		if done {
 			refreshed++
@@ -1053,13 +1053,13 @@ func refresh(conn *sql.DB, c *calls, episode int64) (done bool, err error) {
 	if err != nil || len(ids) == 0 {
 		return false, err
 	}
-	body := "Points de l'épisode :\n- " + strings.Join(texts, "\n- ")
+	body := "Episode points:\n- " + strings.Join(texts, "\n- ")
 	output, err := c.call(wrap(body), refreshSystem, refreshSchema)
 	if err != nil {
 		return false, err
 	}
 	if !nonBlank(output["title"]) || !nonBlank(output["summary"]) {
-		return false, &Error{msg: "sortie du modèle invalide"}
+		return false, &Error{msg: "model output invalid"}
 	}
 	err = immediate(conn, func(tx *sql.Conn) error {
 		current, _, err := remaining(tx, episode)

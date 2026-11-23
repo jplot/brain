@@ -62,7 +62,7 @@ func runClaude(name, level, prompt, system string, schema any) (Result, error) {
 	cmd.WaitDelay = waitDelay
 	err = cmd.Run()
 	if ctx.Err() != nil {
-		return Result{}, &Error{msg: "claude n'a pas répondu à temps"}
+		return Result{}, &Error{msg: "claude did not answer in time"}
 	}
 	var exit *exec.ExitError
 	if err != nil && !errors.As(err, &exit) {
@@ -75,17 +75,17 @@ func runClaude(name, level, prompt, system string, schema any) (Result, error) {
 		cost = &v
 	}
 	if exit != nil {
-		return Result{}, &Error{msg: fmt.Sprintf("claude a échoué (code %d)", exit.ExitCode()), Cost: cost}
+		return Result{}, &Error{msg: fmt.Sprintf("claude failed (code %d)", exit.ExitCode()), Cost: cost}
 	}
 	if payload == nil {
-		return Result{}, &Error{msg: "sortie de claude illisible"}
+		return Result{}, &Error{msg: "claude output unreadable"}
 	}
 	if failed, _ := payload["is_error"].(bool); failed {
-		return Result{}, &Error{msg: "claude a rendu une erreur", Cost: cost}
+		return Result{}, &Error{msg: "claude returned an error", Cost: cost}
 	}
 	output, ok := payload["structured_output"].(map[string]any)
 	if !ok {
-		return Result{}, &Error{msg: "sortie structurée absente", Cost: cost}
+		return Result{}, &Error{msg: "structured output missing", Cost: cost}
 	}
 	return Result{Data: output, CostUSD: cost}, nil
 }
