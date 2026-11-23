@@ -5,6 +5,7 @@ go 1.27.4
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/dlclark/regexp2 v1.12.0
+	golang.org/x/text v0.44.0
 	modernc.org/sqlite v1.63.0
 )
 

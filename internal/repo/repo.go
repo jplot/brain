@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jplot/brain/internal/db"
+	"github.com/jplot/brain/internal/subjects"
 )
 
 // ErrGit marks a git execution failure (missing binary, shim, deadline), as opposed to "not a repository".
@@ -131,12 +132,8 @@ func Cached(ctx context.Context, q db.Querier, path string) (string, bool, error
 	now := db.Stamp(time.Time{})
 	var found any
 	if ok {
-		if _, err := q.ExecContext(bg, "INSERT OR IGNORE INTO subjects(uid, kind, name, aliases, repo, created_at, updated_at) VALUES (?, 'repo', ?, '[]', ?, ?, ?)",
-			db.NewUID(), info.Name, info.Identity, now, now); err != nil {
-			return "", false, err
-		}
-		var subject string
-		if err := q.QueryRowContext(bg, "SELECT uid FROM subjects WHERE repo = ?", info.Identity).Scan(&subject); err != nil {
+		subject, err := subjects.EnsureRepo(q, info.Identity, info.Name)
+		if err != nil {
 			return "", false, err
 		}
 		found = subject

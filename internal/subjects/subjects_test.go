@@ -1,0 +1,641 @@
+package subjects
+
+import (
+	"database/sql"
+	"errors"
+	"path/filepath"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/jplot/brain/internal/db"
+	"github.com/jplot/brain/internal/paths"
+)
+
+const old = "2000-01-01T00:00:00.000Z"
+
+func openDB(t *testing.T) *sql.DB {
+	t.Helper()
+	dir := t.TempDir()
+	d, err := db.Open(paths.Paths{Home: filepath.Join(dir, "home"), Transcripts: filepath.Join(dir, "t")}, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	return d
+}
+
+func exec(t *testing.T, q db.Querier, query string, args ...any) {
+	t.Helper()
+	if _, err := q.ExecContext(bg, query, args...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func count(t *testing.T, q db.Querier, query string, args ...any) int {
+	t.Helper()
+	var n int
+	if err := q.QueryRowContext(bg, query, args...).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func create(t *testing.T, q db.Querier, name string, aliases ...string) string {
+	t.Helper()
+	uid, err := Create(q, name, aliases, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return uid
+}
+
+func setParent(t *testing.T, q db.Querier, child, parent string, o Origin) {
+	t.Helper()
+	if err := SetParent(q, child, parent, o); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func get(t *testing.T, q db.Querier, uid string) *Subject {
+	t.Helper()
+	s, err := Get(q, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func parentOf(t *testing.T, q db.Querier, uid string) (parent, origin, episode sql.NullString) {
+	t.Helper()
+	err := q.QueryRowContext(bg, "SELECT parent_uid, parent_origin, parent_episode_uid FROM subjects WHERE uid = ?", uid).Scan(&parent, &origin, &episode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parent, origin, episode
+}
+
+type linkRow struct {
+	active  bool
+	origin  string
+	episode sql.NullString
+}
+
+func linkOf(t *testing.T, q db.Querier, source, typ, target string) (linkRow, bool) {
+	t.Helper()
+	var l linkRow
+	err := q.QueryRowContext(bg, "SELECT active, origin, episode_uid FROM links WHERE source_uid = ? AND type = ? AND target_uid = ?",
+		source, typ, target).Scan(&l.active, &l.origin, &l.episode)
+	if errors.Is(err, sql.ErrNoRows) {
+		return l, false
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l, true
+}
+
+func ptr(s string) *string { return &s }
+
+func TestNormalize(t *testing.T) {
+	for in, want := range map[string]string{
+		"Réseau maison":            "reseau maison",
+		"réseau-maison":            "reseau maison",
+		"  Fiche   Wikidata ! ":    "fiche wikidata",
+		"L'Été à Noël":             "l ete a noel",
+		"ÇA_VA, Ångström":          "ca va angstrom",
+		"nas 2":                    "nas 2",
+		"Démarche (administratif)": "demarche administratif",
+	} {
+		if got := Normalize(in); got != want {
+			t.Errorf("Normalize(%q) = %q, attendu %q", in, got, want)
+		}
+	}
+}
+
+func TestCreateReturnsExistingByNormalizedName(t *testing.T) {
+	d := openDB(t)
+	network := create(t, d, "Réseau maison", "box")
+	if again := create(t, d, "reseau-maison", "routeur"); again != network {
+		t.Fatalf("homonyme créé : %s, attendu %s", again, network)
+	}
+	if other := create(t, d, "Fiche Wikidata"); other == network {
+		t.Fatal("sujet distinct confondu")
+	}
+	tool, err := EnsureRepo(d, "github.com/exemple/atelier", "atelier")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := EnsureRepo(d, "github.com/exemple/atelier", "atelier"); again != tool {
+		t.Fatalf("dépôt créé deux fois : %s, %s", tool, again)
+	}
+	if got := create(t, d, "Atelier"); got != tool {
+		t.Fatalf("sujet homonyme d'un dépôt : %s, attendu %s", got, tool)
+	}
+	if n := count(t, d, "SELECT count(*) FROM subjects"); n != 3 {
+		t.Fatalf("%d sujets, attendu 3", n)
+	}
+	s := get(t, d, network)
+	if s.Kind != "subject" || s.Name != "Réseau maison" || !slices.Equal(s.Aliases, []string{"box"}) {
+		t.Fatalf("sujet : %+v", s)
+	}
+	if _, err := Create(d, "Domotique", nil, ptr("inconnu")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("parent inconnu : %v", err)
+	}
+}
+
+func TestSetParentRejectsCycle(t *testing.T) {
+	d := openDB(t)
+	home, network, nas := create(t, d, "Maison"), create(t, d, "Réseau"), create(t, d, "NAS")
+	setParent(t, d, network, home, Origin{})
+	setParent(t, d, nas, network, Origin{})
+	for _, o := range []Origin{{}, {User: true}} {
+		if err := SetParent(d, home, nas, o); !errors.Is(err, ErrCycle) {
+			t.Fatalf("cycle accepté (%+v) : %v", o, err)
+		}
+		if err := SetParent(d, home, home, o); !errors.Is(err, ErrCycle) {
+			t.Fatalf("parent de soi-même accepté (%+v) : %v", o, err)
+		}
+	}
+	if parent, _, _ := parentOf(t, d, home); parent.Valid {
+		t.Fatalf("parent écrit malgré le cycle : %s", parent.String)
+	}
+	if err := SetParent(d, nas, "inconnu", Origin{User: true}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("parent inconnu : %v", err)
+	}
+}
+
+func TestModelCannotOverrideUserParent(t *testing.T) {
+	d := openDB(t)
+	home, office, nas := create(t, d, "Maison"), create(t, d, "Bureau"), create(t, d, "NAS")
+	setParent(t, d, nas, home, Origin{User: true})
+	if err := SetParent(d, nas, office, Origin{EpisodeUID: ptr("ep-1")}); !errors.Is(err, ErrUserSet) {
+		t.Fatalf("parent utilisateur remplacé par le modèle : %v", err)
+	}
+	setParent(t, d, nas, "", Origin{User: true})
+	if err := SetParent(d, nas, office, Origin{EpisodeUID: ptr("ep-1")}); !errors.Is(err, ErrUserSet) {
+		t.Fatalf("parent retiré par l'utilisateur rétabli par le modèle : %v", err)
+	}
+	if parent, origin, _ := parentOf(t, d, nas); parent.Valid || origin.String != "user" {
+		t.Fatalf("parent %v, origine %v", parent, origin)
+	}
+
+	shelf := create(t, d, "Étagère")
+	setParent(t, d, shelf, home, Origin{EpisodeUID: ptr("ep-1")})
+	if err := SetParent(d, shelf, office, Origin{EpisodeUID: ptr("ep-2")}); !errors.Is(err, ErrSecondParent) {
+		t.Fatalf("second parent du modèle : %v", err)
+	}
+	setParent(t, d, shelf, home, Origin{EpisodeUID: ptr("ep-2")})
+	if parent, _, episode := parentOf(t, d, shelf); parent.String != home || episode.String != "ep-1" {
+		t.Fatalf("parent %v, épisode %v", parent, episode)
+	}
+}
+
+func TestUserReplacesModelParent(t *testing.T) {
+	d := openDB(t)
+	home, office, nas := create(t, d, "Maison"), create(t, d, "Bureau"), create(t, d, "NAS")
+	setParent(t, d, nas, home, Origin{EpisodeUID: ptr("ep-1")})
+	setParent(t, d, nas, office, Origin{User: true})
+	parent, origin, episode := parentOf(t, d, nas)
+	if parent.String != office || origin.String != "user" || episode.Valid {
+		t.Fatalf("parent %v, origine %v, épisode %v", parent, origin, episode)
+	}
+	setParent(t, d, nas, home, Origin{User: true})
+	if parent, _, _ := parentOf(t, d, nas); parent.String != home {
+		t.Fatalf("l'utilisateur ne remplace pas son propre parent : %v", parent)
+	}
+}
+
+func TestModelCannotRestoreUserRemovedLink(t *testing.T) {
+	d := openDB(t)
+	client, tool := create(t, d, "Client"), create(t, d, "Outil")
+	if err := Link(d, client, "depends_on", tool, Origin{User: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Unlink(d, client, "depends_on", tool, Origin{EpisodeUID: ptr("ep-1")}); !errors.Is(err, ErrUserSet) {
+		t.Fatalf("lien utilisateur retiré par le modèle : %v", err)
+	}
+	if err := Unlink(d, client, "depends_on", tool, Origin{User: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Link(d, client, "depends_on", tool, Origin{EpisodeUID: ptr("ep-2")}); !errors.Is(err, ErrUserSet) {
+		t.Fatalf("lien retiré par l'utilisateur rétabli par le modèle : %v", err)
+	}
+	if l, _ := linkOf(t, d, client, "depends_on", tool); l.active || l.origin != "user" {
+		t.Fatalf("lien : %+v", l)
+	}
+
+	if err := Unlink(d, tool, "about", client, Origin{User: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Link(d, tool, "about", client, Origin{EpisodeUID: ptr("ep-3")}); !errors.Is(err, ErrUserSet) {
+		t.Fatalf("lien jamais posé mais refusé par l'utilisateur, rétabli par le modèle : %v", err)
+	}
+}
+
+func TestModelLinkKeepsEpisode(t *testing.T) {
+	d := openDB(t)
+	client, tool := create(t, d, "Client"), create(t, d, "Outil")
+	if err := Link(d, client, "depends_on", tool, Origin{EpisodeUID: ptr("ep-1")}); err != nil {
+		t.Fatal(err)
+	}
+	l, ok := linkOf(t, d, client, "depends_on", tool)
+	if !ok || !l.active || l.origin != "model" || l.episode.String != "ep-1" {
+		t.Fatalf("lien : %+v", l)
+	}
+	if err := Unlink(d, client, "depends_on", tool, Origin{EpisodeUID: ptr("ep-2")}); err != nil {
+		t.Fatal(err)
+	}
+	if l, _ := linkOf(t, d, client, "depends_on", tool); l.active || l.episode.String != "ep-2" {
+		t.Fatalf("lien retiré : %+v", l)
+	}
+	if err := Link(d, client, "depends_on", "inconnu", Origin{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cible inconnue : %v", err)
+	}
+}
+
+func TestLinkRejectsUnknownType(t *testing.T) {
+	d := openDB(t)
+	a, b := create(t, d, "Client"), create(t, d, "Outil")
+	for _, typ := range []string{"part_of", "uses", ""} {
+		if err := Link(d, a, typ, b, Origin{User: true}); !errors.Is(err, ErrLinkType) {
+			t.Fatalf("Link %q : %v", typ, err)
+		}
+		if err := Unlink(d, a, typ, b, Origin{User: true}); !errors.Is(err, ErrLinkType) {
+			t.Fatalf("Unlink %q : %v", typ, err)
+		}
+	}
+	if n := count(t, d, "SELECT count(*) FROM links"); n != 0 {
+		t.Fatalf("%d liens écrits", n)
+	}
+}
+
+type mergeFixture struct {
+	from, into, parent, child, other, watcher string
+}
+
+func newMergeFixture(t *testing.T, q db.Querier) mergeFixture {
+	t.Helper()
+	f := mergeFixture{
+		parent:  create(t, q, "Maison"),
+		into:    create(t, q, "Réseau", "lan"),
+		child:   create(t, q, "Routeur"),
+		other:   create(t, q, "Outil"),
+		watcher: create(t, q, "Démarche"),
+	}
+	from, err := EnsureRepo(q, "github.com/exemple/reseau-maison", "reseau-maison")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.from = from
+	if err := AddAliases(q, from, []string{"box", "LAN"}); err != nil {
+		t.Fatal(err)
+	}
+	setParent(t, q, from, f.parent, Origin{EpisodeUID: ptr("ep-0")})
+	setParent(t, q, f.child, from, Origin{User: true})
+
+	exec(t, q, "INSERT INTO episodes(id, session_id, start_ts, end_ts, created_at, uid, updated_at) VALUES (1, 's1', 'a', 'b', ?, 'ep-1', ?), (2, 's2', 'a', 'b', ?, 'ep-2', ?)", old, old, old, old)
+	exec(t, q, "INSERT INTO points(episode_id, kind, subject_uid, text, importance, source_ts, created_at, uid, updated_at) VALUES (1, 'fact', ?, 'un fait', 3, 'a', ?, 'p-1', ?), (2, 'fact', ?, 'un autre', 3, 'a', ?, 'p-2', ?)",
+		from, old, old, f.into, old, old)
+	exec(t, q, "INSERT INTO episode_subjects(episode_uid, subject_uid) VALUES ('ep-1', ?), ('ep-1', ?), ('ep-2', ?)", from, f.into, from)
+	exec(t, q, "INSERT INTO session_repos(session_id, subject_uid) VALUES ('s1', ?), ('s1', ?), ('s2', ?)", from, f.into, from)
+	exec(t, q, "INSERT INTO injected(session_id, subject_uid) VALUES ('s1', ?)", from)
+	exec(t, q, "INSERT INTO repo_cache(path, subject_uid, checked_at) VALUES ('/x', ?, ?)", from, old)
+
+	for _, l := range []struct {
+		source, typ, target string
+		o                   Origin
+		unlink              bool
+	}{
+		{from, "depends_on", f.other, Origin{EpisodeUID: ptr("ep-1")}, false},
+		{f.into, "depends_on", f.other, Origin{User: true}, true},
+		{f.watcher, "about", from, Origin{EpisodeUID: ptr("ep-1")}, false},
+		{f.into, "about", f.watcher, Origin{EpisodeUID: ptr("ep-2")}, false},
+		{from, "about", f.watcher, Origin{User: true}, false},
+		{from, "depends_on", f.into, Origin{EpisodeUID: ptr("ep-1")}, false},
+	} {
+		write := Link
+		if l.unlink {
+			write = Unlink
+		}
+		if err := write(q, l.source, l.typ, l.target, l.o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(t, q, "UPDATE subjects SET updated_at = ?", old)
+	exec(t, q, "UPDATE links SET updated_at = ?", old)
+	return f
+}
+
+func TestMergeMovesEverythingAndLeavesTrace(t *testing.T) {
+	d := openDB(t)
+	f := newMergeFixture(t, d)
+	if err := Merge(d, f.from, f.into); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Get(d, f.from); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("sujet fusionné encore présent : %v", err)
+	}
+	var into string
+	if err := d.QueryRow("SELECT into_uid FROM merged WHERE from_uid = ?", f.from).Scan(&into); err != nil || into != f.into {
+		t.Fatalf("trace de fusion : %q, %v", into, err)
+	}
+	s := get(t, d, f.into)
+	if s.Name != "Réseau" || s.Kind != "repo" || s.Repo == nil || *s.Repo != "github.com/exemple/reseau-maison" {
+		t.Fatalf("survivant : %+v", s)
+	}
+	if !slices.Equal(s.Aliases, []string{"lan", "box", "reseau-maison"}) {
+		t.Fatalf("mots-clés : %q", s.Aliases)
+	}
+	if parent, origin, episode := parentOf(t, d, f.into); parent.String != f.parent || origin.String != "model" || episode.String != "ep-0" {
+		t.Fatalf("parent repris : %v %v %v", parent, origin, episode)
+	}
+	if parent, origin, _ := parentOf(t, d, f.child); parent.String != f.into || origin.String != "user" {
+		t.Fatalf("enfant : %v %v", parent, origin)
+	}
+
+	for query, want := range map[string]int{
+		"SELECT count(*) FROM points WHERE subject_uid = ?1":                  2,
+		"SELECT count(*) FROM episode_subjects WHERE subject_uid = ?1":        2,
+		"SELECT count(*) FROM session_repos WHERE subject_uid = ?1":           2,
+		"SELECT count(*) FROM injected WHERE subject_uid = ?1":                1,
+		"SELECT count(*) FROM repo_cache WHERE subject_uid = ?1":              1,
+		"SELECT count(*) FROM links WHERE source_uid = ?1 OR target_uid = ?1": 3,
+		"SELECT count(*) FROM points WHERE updated_at = ?2":                   1,
+		"SELECT count(*) FROM episodes WHERE updated_at = ?2":                 0,
+	} {
+		if n := count(t, d, query, f.into, old); n != want {
+			t.Errorf("%s : %d, attendu %d", query, n, want)
+		}
+	}
+	for _, table := range []string{"points", "episode_subjects", "session_repos", "injected", "repo_cache"} {
+		if n := count(t, d, "SELECT count(*) FROM "+table+" WHERE subject_uid = ?", f.from); n != 0 {
+			t.Errorf("%s vise encore le sujet fusionné : %d", table, n)
+		}
+	}
+	if n := count(t, d, "SELECT count(*) FROM links WHERE source_uid = ?1 OR target_uid = ?1", f.from); n != 0 {
+		t.Errorf("liens visant encore le sujet fusionné : %d", n)
+	}
+	if l, _ := linkOf(t, d, f.into, "depends_on", f.other); l.active || l.origin != "user" {
+		t.Errorf("le retrait utilisateur doit l'emporter sur le lien du modèle : %+v", l)
+	}
+	if l, ok := linkOf(t, d, f.watcher, "about", f.into); !ok || !l.active || l.episode.String != "ep-1" {
+		t.Errorf("lien entrant reporté : %+v %v", l, ok)
+	}
+	if l, _ := linkOf(t, d, f.into, "about", f.watcher); !l.active || l.origin != "user" {
+		t.Errorf("le lien utilisateur doit l'emporter sur celui du modèle : %+v", l)
+	}
+	if _, ok := linkOf(t, d, f.into, "depends_on", f.into); ok {
+		t.Error("lien vers soi-même créé par la fusion")
+	}
+	if n := count(t, d, "SELECT count(*) FROM links WHERE updated_at = ? AND NOT (source_uid = ? AND target_uid = ?)", old, f.into, f.other); n != 0 {
+		t.Errorf("%d liens reportés sans updated_at", n)
+	}
+	if n := count(t, d, "SELECT count(*) FROM subjects WHERE uid IN (?, ?) AND updated_at = ?", f.into, f.child, old); n != 0 {
+		t.Errorf("%d sujets modifiés sans updated_at", n)
+	}
+
+	if err := Merge(d, f.into, f.into); !errors.Is(err, ErrSelfMerge) {
+		t.Fatalf("fusion avec soi-même : %v", err)
+	}
+	if err := Merge(d, f.from, f.into); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("fusion d'un sujet disparu : %v", err)
+	}
+}
+
+func TestMergeIsAtomic(t *testing.T) {
+	d := openDB(t)
+	f := newMergeFixture(t, d)
+	exec(t, d, "CREATE TRIGGER refuse BEFORE INSERT ON merged BEGIN SELECT RAISE(ABORT, 'refusé'); END")
+	if err := Merge(d, f.from, f.into); err == nil {
+		t.Fatal("fusion réussie malgré l'échec de la trace")
+	}
+	tx, err := d.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := Merge(tx, f.from, f.into); err == nil {
+		t.Fatal("fusion réussie malgré l'échec de la trace (transaction)")
+	}
+	if n := count(t, tx, "SELECT count(*) FROM points WHERE subject_uid = ?", f.from); n != 1 {
+		t.Fatalf("points déplacés malgré l'échec : %d restants", n)
+	}
+	get(t, tx, f.from)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	get(t, d, f.from)
+	if n := count(t, d, "SELECT count(*) FROM links WHERE source_uid = ?1 OR target_uid = ?1", f.from); n != 4 {
+		t.Fatalf("liens perdus malgré l'échec : %d", n)
+	}
+}
+
+func TestMergeIntoDescendantKeepsTree(t *testing.T) {
+	d := openDB(t)
+	home, network, nas := create(t, d, "Maison"), create(t, d, "Réseau"), create(t, d, "NAS")
+	setParent(t, d, network, home, Origin{})
+	setParent(t, d, nas, network, Origin{User: true})
+	if err := Merge(d, home, nas); err != nil {
+		t.Fatal(err)
+	}
+	if parent, _, _ := parentOf(t, d, nas); parent.Valid {
+		t.Fatalf("le survivant garde un parent sous le sujet fusionné : %s", parent.String)
+	}
+	if parent, _, _ := parentOf(t, d, network); parent.String != nas {
+		t.Fatalf("enfant du sujet fusionné : %v", parent)
+	}
+
+	office, desk, lamp := create(t, d, "Bureau"), create(t, d, "Table"), create(t, d, "Lampe")
+	setParent(t, d, desk, office, Origin{})
+	setParent(t, d, lamp, desk, Origin{})
+	if err := Merge(d, desk, office); err != nil {
+		t.Fatal(err)
+	}
+	if parent, _, _ := parentOf(t, d, office); parent.Valid {
+		t.Fatalf("l'ancêtre a pris un parent dans son propre sous-arbre : %s", parent.String)
+	}
+	if parent, _, _ := parentOf(t, d, lamp); parent.String != office {
+		t.Fatalf("petit-enfant : %v", parent)
+	}
+}
+
+func TestMergeDuplicatesByNameAndRepo(t *testing.T) {
+	d := openDB(t)
+	network := []string{create(t, d, "Réseau maison")}
+	for _, name := range []string{"reseau-maison", "RÉSEAU  MAISON"} {
+		uid := db.NewUID()
+		exec(t, d, "INSERT INTO subjects(uid, kind, name, aliases, created_at, updated_at) VALUES (?, 'subject', ?, '[]', ?, ?)", uid, name, old, old)
+		network = append(network, uid)
+	}
+	exec(t, d, "INSERT INTO episodes(id, session_id, start_ts, end_ts, created_at, uid, updated_at) VALUES (1, 's1', 'a', 'b', 'a', 'ep-1', 'a')")
+	exec(t, d, "INSERT INTO points(episode_id, kind, subject_uid, text, importance, source_ts, created_at, uid, updated_at) SELECT 1, 'fact', uid, 'x', 1, 'a', 'a', uid, 'a' FROM subjects")
+	tool, err := EnsureRepo(d, "github.com/exemple/atelier", "atelier")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolTopic := db.NewUID()
+	exec(t, d, "INSERT INTO subjects(uid, kind, name, aliases, created_at, updated_at) VALUES (?, 'subject', 'Atelier', '[]', ?, ?)", toolTopic, old, old)
+	fork1, _ := EnsureRepo(d, "github.com/exemple/outil", "outil")
+	fork2, _ := EnsureRepo(d, "gitlab.com/autre/outil", "outil")
+
+	n, err := MergeDuplicates(d)
+	if err != nil || n != 3 {
+		t.Fatalf("MergeDuplicates = %d, %v ; attendu 3", n, err)
+	}
+	survivor := slices.Min(network)
+	if s := count(t, d, "SELECT count(*) FROM subjects WHERE uid IN (?, ?, ?)", network[0], network[1], network[2]); s != 1 {
+		t.Fatalf("%d sujets réseau restants", s)
+	}
+	get(t, d, survivor)
+	if n := count(t, d, "SELECT count(*) FROM points WHERE subject_uid = ?", survivor); n != 3 {
+		t.Fatalf("%d points sur le survivant", n)
+	}
+	s := get(t, d, min(tool, toolTopic))
+	if s.Kind != "repo" || s.Repo == nil || *s.Repo != "github.com/exemple/atelier" {
+		t.Fatalf("le survivant d'un dépôt doit garder son identité : %+v", s)
+	}
+	get(t, d, fork1)
+	get(t, d, fork2)
+	if n := count(t, d, "SELECT count(*) FROM merged"); n != 3 {
+		t.Fatalf("%d traces de fusion", n)
+	}
+	if again, err := EnsureRepo(d, "github.com/exemple/atelier", "atelier"); err != nil || again != s.UID {
+		t.Fatalf("dépôt retrouvé après fusion : %s, %v", again, err)
+	}
+
+	if n, err := MergeDuplicates(d); err != nil || n != 0 {
+		t.Fatalf("second passage : %d, %v", n, err)
+	}
+}
+
+func TestDescendants(t *testing.T) {
+	d := openDB(t)
+	home, network, nas, router, office := create(t, d, "Maison"), create(t, d, "Réseau"), create(t, d, "NAS"), create(t, d, "Routeur"), create(t, d, "Bureau")
+	setParent(t, d, network, home, Origin{})
+	setParent(t, d, nas, network, Origin{})
+	setParent(t, d, router, network, Origin{})
+	got, err := Descendants(d, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{network, nas, router}
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("Descendants = %v, attendu %v", got, want)
+	}
+	if got, _ := Descendants(d, office); len(got) != 0 {
+		t.Fatalf("feuille : %v", got)
+	}
+}
+
+func TestTreeAndNeighbors(t *testing.T) {
+	d := openDB(t)
+	home, network, nas, client := create(t, d, "Maison"), create(t, d, "Réseau"), create(t, d, "NAS"), create(t, d, "Client")
+	setParent(t, d, network, home, Origin{})
+	setParent(t, d, nas, network, Origin{})
+	for _, typ := range []string{"depends_on", "about"} {
+		if err := Link(d, nas, typ, client, Origin{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Link(d, nas, "depends_on", home, Origin{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Unlink(d, nas, "depends_on", home, Origin{User: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	parent, deps, err := Neighbors(d, nas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent == nil || parent.UID != network || len(deps) != 1 || deps[0].UID != client {
+		t.Fatalf("voisins : %+v %+v", parent, deps)
+	}
+	if parent, _, _ := Neighbors(d, home); parent != nil {
+		t.Fatalf("racine avec parent : %+v", parent)
+	}
+
+	tree, err := Tree(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tree) != 2 || tree[0].Name != "Client" || tree[1].Name != "Maison" {
+		t.Fatalf("racines : %+v", tree)
+	}
+	leaf := tree[1].Children[0].Children[0]
+	if leaf.UID != nas || !slices.Equal(leaf.Links, []Edge{{"about", client}, {"depends_on", client}}) {
+		t.Fatalf("feuille : %+v", leaf)
+	}
+}
+
+func TestFindByTermAmbiguous(t *testing.T) {
+	d := openDB(t)
+	home := create(t, d, "Maison", "nas")
+	office := create(t, d, "Bureau", "NAS")
+	create(t, d, "Réseau")
+	found, err := FindByTerm(d, "Nas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uids := []string{}
+	for _, s := range found {
+		uids = append(uids, s.UID)
+	}
+	want := []string{home, office}
+	slices.Sort(uids)
+	slices.Sort(want)
+	if !slices.Equal(uids, want) {
+		t.Fatalf("FindByTerm = %v, attendu %v", uids, want)
+	}
+	for _, term := range []string{"réseau", "RESEAU", home} {
+		if found, _ := FindByTerm(d, term); len(found) != 1 {
+			t.Fatalf("FindByTerm(%q) : %+v", term, found)
+		}
+	}
+	if found, _ := FindByTerm(d, "garage"); len(found) != 0 {
+		t.Fatalf("terme absent : %+v", found)
+	}
+}
+
+func TestWritesBumpUpdatedAt(t *testing.T) {
+	d := openDB(t)
+	a, b, c := create(t, d, "Client"), create(t, d, "Outil"), create(t, d, "Maison")
+	stale := func() {
+		exec(t, d, "UPDATE subjects SET updated_at = ?", old)
+		exec(t, d, "UPDATE links SET updated_at = ?", old)
+	}
+	bumped := func(what, table, where string, args ...any) {
+		t.Helper()
+		if n := count(t, d, "SELECT count(*) FROM "+table+" WHERE updated_at = '"+old+"' AND "+where, args...); n != 0 {
+			t.Errorf("%s : updated_at inchangé", what)
+		}
+	}
+	for _, step := range []struct {
+		what, table, where string
+		args               []any
+		write              func() error
+	}{
+		{"Rename", "subjects", "uid = ?", []any{a}, func() error { return Rename(d, a, "Client web") }},
+		{"AddAliases", "subjects", "uid = ?", []any{a}, func() error { return AddAliases(d, a, []string{"front"}) }},
+		{"SetParent", "subjects", "uid = ?", []any{a}, func() error { return SetParent(d, a, c, Origin{}) }},
+		{"Link", "links", "1", nil, func() error { return Link(d, a, "depends_on", b, Origin{}) }},
+		{"Unlink", "links", "1", nil, func() error { return Unlink(d, a, "depends_on", b, Origin{User: true}) }},
+		{"Merge", "subjects", "uid = ?", []any{b}, func() error { return Merge(d, c, b) }},
+	} {
+		stale()
+		if err := step.write(); err != nil {
+			t.Fatalf("%s : %v", step.what, err)
+		}
+		bumped(step.what, step.table, step.where, step.args...)
+	}
+	stale()
+	if err := AddAliases(d, a, []string{"FRONT", "client web"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(t, d, "SELECT count(*) FROM subjects WHERE uid = ? AND updated_at = ?", a, old); n != 1 {
+		t.Error("AddAliases sans nouveau mot-clé a réécrit le sujet")
+	}
+}
