@@ -32,7 +32,7 @@ func pointLine(p memory.Point) string {
 	}
 	line := fmt.Sprintf("%d  %s  %s  %s", p.ID, p.Kind, subject, flat(p.Text))
 	if p.ClosedAt != nil {
-		line += "  [clos]"
+		line += "  [closed]"
 	}
 	return line
 }
@@ -79,7 +79,7 @@ func searchCmd(e *env, args []string) (int, error) {
 		return 0, err
 	}
 	if len(words) == 0 {
-		return 0, usagef("search : mots de recherche manquants")
+		return 0, usagef("search: missing search words")
 	}
 	from, err := parseDay(*since)
 	if err != nil {
@@ -112,7 +112,7 @@ func searchCmd(e *env, args []string) (int, error) {
 		return 0, err
 	}
 	if len(points) > 0 {
-		fmt.Fprintln(e.out, "Souvenirs :")
+		fmt.Fprintln(e.out, "Memories:")
 		for _, p := range points {
 			fmt.Fprintln(e.out, pointLine(p))
 		}
@@ -121,7 +121,7 @@ func searchCmd(e *env, args []string) (int, error) {
 		var b strings.Builder
 		for _, s := range h.Segments {
 			if s.Match {
-				b.WriteString("«" + s.Text + "»")
+				b.WriteString("**" + s.Text + "**")
 			} else {
 				b.WriteString(s.Text)
 			}
@@ -129,7 +129,7 @@ func searchCmd(e *env, args []string) (int, error) {
 		fmt.Fprintf(e.out, "%s  %s  %s  %s  %s\n", local(h.TS), subjectNames(h.Subjects), short(h.SessionID), h.Role, flat(b.String()))
 	}
 	if len(hits) == 0 && len(points) == 0 {
-		fmt.Fprintln(e.out, "Aucun résultat.")
+		fmt.Fprintln(e.out, "No results.")
 	}
 	return 0, nil
 }
@@ -143,7 +143,7 @@ func souvenirs(e *env, args []string) (int, error) {
 		return 0, err
 	}
 	if *kind != "" && !slices.Contains(kinds, *kind) {
-		return 0, usagef("type invalide : %s (attendu %s)", *kind, strings.Join(kinds, ", "))
+		return 0, usagef("invalid kind: %s (expected %s)", *kind, strings.Join(kinds, ", "))
 	}
 	n, err := count(*limit, 20)
 	if err != nil {
@@ -164,7 +164,7 @@ func souvenirs(e *env, args []string) (int, error) {
 			return 0, err
 		}
 		if synthesis != "" {
-			fmt.Fprintf(e.out, "Synthèse : %s\n", flat(synthesis))
+			fmt.Fprintf(e.out, "Synthesis: %s\n", flat(synthesis))
 		}
 	}
 	points, err := memory.VisiblePoints(conn, memory.PointFilter{Kind: *kind, Subject: *subject,
@@ -179,7 +179,7 @@ func souvenirs(e *env, args []string) (int, error) {
 		fmt.Fprintln(e.out, pointLine(p))
 	}
 	if len(points) == 0 {
-		fmt.Fprintln(e.out, "Aucun souvenir.")
+		fmt.Fprintln(e.out, "No memories.")
 	}
 	return 0, nil
 }
@@ -190,7 +190,7 @@ func session(e *env, args []string) (int, error) {
 		return 0, err
 	}
 	if len(words) != 1 {
-		return 0, usagef("session : un identifiant attendu")
+		return 0, usagef("session: one id expected")
 	}
 	conn, err := openFresh(e)
 	if err != nil {
@@ -202,10 +202,10 @@ func session(e *env, args []string) (int, error) {
 		return 0, err
 	}
 	if row == nil {
-		fmt.Fprintln(e.out, "Session introuvable.")
+		fmt.Fprintln(e.out, "Session not found.")
 		return 0, nil
 	}
-	title := "(sans titre)"
+	title := "(untitled)"
 	if row.Title != nil && *row.Title != "" {
 		title = flat(*row.Title)
 	}
@@ -216,7 +216,7 @@ func session(e *env, args []string) (int, error) {
 	}
 	for _, ep := range episodes {
 		if ep.Title != nil {
-			fmt.Fprintf(e.out, "Résumé : %s [%s]\n", flat(*ep.Title), subjectNames(ep.Subjects))
+			fmt.Fprintf(e.out, "Summary: %s [%s]\n", flat(*ep.Title), subjectNames(ep.Subjects))
 		}
 		if ep.Summary != nil && *ep.Summary != "" {
 			fmt.Fprintf(e.out, "  %s\n", flat(*ep.Summary))
@@ -241,7 +241,7 @@ func day(e *env, args []string) (int, error) {
 		return 0, err
 	}
 	if len(words) != 1 {
-		return 0, usagef("day : une date AAAA-MM-JJ attendue")
+		return 0, usagef("day: one date YYYY-MM-DD expected")
 	}
 	when, err := parseDay(words[0])
 	if err != nil {
@@ -257,7 +257,7 @@ func day(e *env, args []string) (int, error) {
 		return 0, err
 	}
 	for _, r := range rows {
-		title := "(sans titre)"
+		title := "(untitled)"
 		if r.Title != nil && *r.Title != "" {
 			title = flat(*r.Title)
 		}
@@ -265,7 +265,7 @@ func day(e *env, args []string) (int, error) {
 			short(r.ID), subjectNames(r.Subjects), title, r.Messages)
 	}
 	if len(rows) == 0 {
-		fmt.Fprintln(e.out, "Aucune session ce jour.")
+		fmt.Fprintln(e.out, "No sessions that day.")
 	}
 	return 0, nil
 }
@@ -301,7 +301,7 @@ func subjectsTree(e *env, args []string) (int, error) {
 		tree = findNode(tree, ids[0])
 	}
 	if len(tree) == 0 {
-		fmt.Fprintln(e.out, "Aucun sujet.")
+		fmt.Fprintln(e.out, "No subjects.")
 		return 0, nil
 	}
 	var print func(nodes []subjects.Node, depth int)
@@ -369,23 +369,23 @@ func memoCmd(e *env, args []string) (int, error) {
 			_, err = os.Stat(cwd)
 		}
 		if err != nil {
-			return 0, usagef("le dossier courant n'existe plus")
+			return 0, usagef("the current directory no longer exists")
 		}
 		if text, err = memo.Preview(conn, cwd, time.Now()); err != nil {
 			return 0, err
 		}
 	}
 	if text == "" {
-		text = "Aucun souvenir pour ce dossier."
+		text = "No memories for this directory."
 	}
 	fmt.Fprintln(e.out, text)
 	return 0, nil
 }
 
 var statuses = map[string]string{
-	summary.Summarized: "résumé", summary.Empty: "vide", summary.TooLong: "trop long",
-	summary.Failed: "échec", summary.Already: "déjà résumé", summary.Busy: "base occupée",
-	summary.Refreshed: "rafraîchi", summary.Synthesized: "synthèse",
+	summary.Summarized: "summarized", summary.Empty: "empty", summary.TooLong: "too long",
+	summary.Failed: "failed", summary.Already: "already summarized", summary.Busy: "database busy",
+	summary.Refreshed: "refreshed", summary.Synthesized: "synthesis",
 }
 
 func summarize(e *env, args []string) (int, error) {
@@ -396,7 +396,7 @@ func summarize(e *env, args []string) (int, error) {
 		return 0, err
 	}
 	if *force && *sessionRef == "" {
-		return 0, usagef("summarize : --force exige --session")
+		return 0, usagef("summarize: --force requires --session")
 	}
 	n, err := count(*limit, 0)
 	if err != nil {
@@ -425,18 +425,18 @@ func summarize(e *env, args []string) (int, error) {
 		return 0, err
 	}
 	if !ran {
-		fmt.Fprintln(e.out, "Un résumé est déjà en cours.")
+		fmt.Fprintln(e.out, "A summary is already running.")
 		return 0, nil
 	}
 	if len(outcomes) == 0 {
-		fmt.Fprintln(e.out, "Aucune session à résumer.")
+		fmt.Fprintln(e.out, "No session to summarize.")
 		return 0, nil
 	}
 	var points int
 	var cost float64
 	code := 0
 	for _, o := range outcomes {
-		unit, who := "résumés", ""
+		unit, who := "summaries", ""
 		switch {
 		case o.SessionID != "":
 			unit, who = "points", short(o.SessionID)+"  "
@@ -450,7 +450,7 @@ func summarize(e *env, args []string) (int, error) {
 			code = 1
 		}
 	}
-	fmt.Fprintf(e.out, "Total : %d points, $%.4f\n", points, cost)
+	fmt.Fprintf(e.out, "Total: %d points, $%.4f\n", points, cost)
 	return code, nil
 }
 
@@ -462,13 +462,13 @@ func forget(e *env, args []string) (int, error) {
 		return 0, err
 	}
 	if len(words) != 2 || (words[0] != "point" && words[0] != "session") {
-		return 0, usagef("forget : forget point|session <id>")
+		return 0, usagef("forget: forget point|session <id>")
 	}
 	var pointID int64
 	if words[0] == "point" {
 		n, err := strconv.ParseInt(words[1], 10, 64)
 		if err != nil || n < 1 {
-			return 0, usagef("nombre invalide : %s", words[1])
+			return 0, usagef("invalid number: %s", words[1])
 		}
 		pointID = n
 	}
@@ -487,7 +487,7 @@ func forget(e *env, args []string) (int, error) {
 		if len(found) == 0 {
 			return 0, &memory.ErrPointNotFound{ID: pointID}
 		}
-		description = "le point " + pointLine(found[0])
+		description = "point " + pointLine(found[0])
 		erase = func() error { return memory.ForgetPoint(conn, pointID) }
 	} else {
 		row, _, err := search.SessionView(conn, words[1])
@@ -495,9 +495,9 @@ func forget(e *env, args []string) (int, error) {
 			return 0, err
 		}
 		if row == nil {
-			return 0, usagef("session introuvable : %s", words[1])
+			return 0, usagef("session not found: %s", words[1])
 		}
-		title := "(sans titre)"
+		title := "(untitled)"
 		if row.Title != nil && *row.Title != "" {
 			title = flat(*row.Title)
 		}
@@ -506,8 +506,8 @@ func forget(e *env, args []string) (int, error) {
 			" (SELECT count(*) FROM points WHERE episode_id IN (SELECT id FROM episodes WHERE session_id = ?1))", row.ID).Scan(&messages, &episodes, &points); err != nil {
 			return 0, err
 		}
-		description = fmt.Sprintf("la session %s  %s (%d messages, %d épisodes, %d points)", short(row.ID), title, messages, episodes, points)
-		note = "\nLe fichier de transcript reste sur le disque : l'oubli ne fait que le retirer de la mémoire."
+		description = fmt.Sprintf("session %s  %s (%d messages, %d episodes, %d points)", short(row.ID), title, messages, episodes, points)
+		note = "\nThe transcript file stays on disk: forgetting only removes it from memory."
 		erase = func() error {
 			release, _, err := lock.Writer(e.p.IndexLock(), true)
 			if err != nil {
@@ -518,18 +518,18 @@ func forget(e *env, args []string) (int, error) {
 		}
 	}
 	if !*yes {
-		fmt.Fprintf(e.out, "Effacerait de la mémoire %s.%s\nRelancer avec --yes pour confirmer.\n", description, note)
+		fmt.Fprintf(e.out, "Would erase from memory: %s.%s\nRun again with --yes to confirm.\n", description, note)
 		return 2, nil
 	}
 	if err := erase(); err != nil {
 		return 0, err
 	}
-	fmt.Fprintf(e.out, "Oublié : %s.%s\n", description, note)
+	fmt.Fprintf(e.out, "Forgotten: %s.%s\n", description, note)
 	return 0, nil
 }
 
 func report(e *env, stats index.Stats) int {
-	fmt.Fprintf(e.out, "fichiers : %d\nmessages : %d\nlignes mal formées : %d\nfichiers en échec : %d\n",
+	fmt.Fprintf(e.out, "files: %d\nmessages: %d\nmalformed lines: %d\nfailed files: %d\n",
 		stats.Files, stats.Messages, stats.Malformed, stats.Failed)
 	if stats.Failed > 0 {
 		return 1
@@ -570,8 +570,8 @@ func migrateCmd(e *env, args []string) (int, error) {
 	}
 	// Run once, by hand: the reason goes to the terminal as well as to paul.log.
 	if err := migrate.Run(*from, *root, e.p, e.out); err != nil {
-		log.Printf("migrate : %v", err)
-		fmt.Fprintf(e.err, "paul : reprise impossible : %v\n", err)
+		log.Printf("migrate: %v", err)
+		fmt.Fprintf(e.err, "paul: migration impossible: %v\n", err)
 		return 1, nil
 	}
 	return 0, nil
@@ -588,7 +588,7 @@ func webCmd(e *env, args []string) (int, error) {
 
 func hookCmd(e *env, args []string) (int, error) {
 	if len(args) != 1 {
-		return 0, usagef("hook : attendu start, prompt ou end")
+		return 0, usagef("hook: expected start, prompt or end")
 	}
 	hook.Version = Version
 	return hook.Run(args[0], e.p, os.Stdin, e.out), nil

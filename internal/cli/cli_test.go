@@ -81,7 +81,7 @@ func (f *fixture) ok(args ...string) string {
 	f.t.Helper()
 	code, out, errOut := f.run(args...)
 	if code != 0 {
-		f.t.Fatalf("paul %v : code %d\n%s%s", args, code, out, errOut)
+		f.t.Fatalf("paul %v: code %d\n%s%s", args, code, out, errOut)
 	}
 	return out
 }
@@ -90,7 +90,7 @@ func (f *fixture) fails(want int, args ...string) string {
 	f.t.Helper()
 	code, out, errOut := f.run(args...)
 	if code != want {
-		f.t.Fatalf("paul %v : code %d, attendu %d\n%s%s", args, code, want, out, errOut)
+		f.t.Fatalf("paul %v: code %d, want %d\n%s%s", args, code, want, out, errOut)
 	}
 	return out + errOut
 }
@@ -207,7 +207,7 @@ func contains(t *testing.T, got string, wants ...string) {
 	t.Helper()
 	for _, want := range wants {
 		if !strings.Contains(got, want) {
-			t.Fatalf("manque %q dans\n%s", want, got)
+			t.Fatalf("missing %q in\n%s", want, got)
 		}
 	}
 }
@@ -216,7 +216,7 @@ func lacks(t *testing.T, got string, unwanted ...string) {
 	t.Helper()
 	for _, u := range unwanted {
 		if strings.Contains(got, u) {
-			t.Fatalf("%q ne devrait pas figurer dans\n%s", u, got)
+			t.Fatalf("%q should not appear in\n%s", u, got)
 		}
 	}
 }
@@ -227,14 +227,14 @@ func TestSearchPrintsHitsAndRefreshesTheIndex(t *testing.T) {
 	contains(t, f.ok("search", "pomme"), "pomme")
 	f.transcript(s2, message(s2, "2026-10-26T23:45:57Z", "une poire mûre"))
 	out := f.ok("search", "poire")
-	if want := "2026-10-27 00:45  -  bbbbbbbb  user  une «poire» mûre\n"; out != want {
+	if want := "2026-10-27 00:45  -  bbbbbbbb  user  une **poire** mûre\n"; out != want {
 		t.Fatalf("got %q, want %q", out, want)
 	}
 }
 
 func TestSearchWithoutResultIsNotAnError(t *testing.T) {
 	f := newFixture(t)
-	contains(t, f.ok("search", "introuvable"), "Aucun résultat")
+	contains(t, f.ok("search", "introuvable"), "No results")
 }
 
 func TestSearchSinceAndUntil(t *testing.T) {
@@ -247,7 +247,7 @@ func TestSearchSinceAndUntil(t *testing.T) {
 func TestSearchJoinedWordsAndLimitAfterTheWords(t *testing.T) {
 	f := newFixture(t)
 	f.say(s1, "une pomme rouge")
-	contains(t, f.ok("search", "pomme", "rouge", "--limit", "1"), "«pomme»")
+	contains(t, f.ok("search", "pomme", "rouge", "--limit", "1"), "**pomme**")
 }
 
 func TestSearchSubjectFlag(t *testing.T) {
@@ -260,7 +260,7 @@ func TestSearchSubjectFlag(t *testing.T) {
 	out := f.ok("search", "pomme", "--subject", "atelier")
 	contains(t, out, "00:45  Atelier  aaaaaaaa")
 	lacks(t, out, "bbbbbbbb")
-	contains(t, f.fails(2, "search", "pomme", "--subject", "inconnu"), "sujet inconnu : inconnu")
+	contains(t, f.fails(2, "search", "pomme", "--subject", "inconnu"), "unknown subject: inconnu")
 }
 
 func TestSearchListsPointsAndMarksThemUsed(t *testing.T) {
@@ -269,26 +269,26 @@ func TestSearchListsPointsAndMarksThemUsed(t *testing.T) {
 	f.ok("index")
 	atelier := f.subject("Atelier")
 	f.point(f.episode(s1, "Pommes", "r", atelier), atelier, "decision", "Cueillir la pomme en octobre")
-	contains(t, f.ok("search", "pomme"), "Souvenirs :", "decision  Atelier  Cueillir la pomme en octobre")
+	contains(t, f.ok("search", "pomme"), "Memories:", "decision  Atelier  Cueillir la pomme en octobre")
 	if n := f.count("SELECT count(*) FROM point_usage"); n != 1 {
-		t.Fatalf("%d points marqués utilisés", n)
+		t.Fatalf("%d points marked used", n)
 	}
 }
 
 func TestEmptyQueryIsAUsageError(t *testing.T) {
 	f := newFixture(t)
-	contains(t, f.fails(2, "search", ""), "requête vide")
+	contains(t, f.fails(2, "search", ""), "empty query")
 	f.fails(2, "search")
 }
 
 func TestInvalidOptionsAreUsageErrors(t *testing.T) {
 	f := newFixture(t)
-	contains(t, f.fails(2, "search", "x", "--since", "hier"), "date invalide : hier (attendu AAAA-MM-JJ)")
-	contains(t, f.fails(2, "search", "x", "--limit", "0"), "nombre invalide : 0")
-	contains(t, f.fails(2, "souvenirs", "--kind", "sujet"), "type invalide : sujet")
-	contains(t, f.fails(2, "search", "x", "--nope"), "option inconnue")
-	contains(t, f.fails(2, "search", "x", "--limit"), "valeur manquante")
-	contains(t, f.fails(2, "day", "pas-une-date"), "date invalide")
+	contains(t, f.fails(2, "search", "x", "--since", "hier"), "invalid date: hier (expected YYYY-MM-DD)")
+	contains(t, f.fails(2, "search", "x", "--limit", "0"), "invalid number: 0")
+	contains(t, f.fails(2, "souvenirs", "--kind", "sujet"), "invalid kind: sujet")
+	contains(t, f.fails(2, "search", "x", "--nope"), "unknown option")
+	contains(t, f.fails(2, "search", "x", "--limit"), "missing value")
+	contains(t, f.fails(2, "day", "pas-une-date"), "invalid date")
 }
 
 func TestDay(t *testing.T) {
@@ -302,7 +302,7 @@ func TestDay(t *testing.T) {
 	if want := "2026-10-27 00:45  00:45  aaaaaaaa  Atelier  Pommes du jour  (1 messages)\n"; out != want {
 		t.Fatalf("got %q, want %q", out, want)
 	}
-	contains(t, f.ok("day", "2026-01-01"), "Aucune session ce jour.")
+	contains(t, f.ok("day", "2026-01-01"), "No sessions that day.")
 }
 
 func TestSessionShowsSummaryPointsAndMessages(t *testing.T) {
@@ -312,7 +312,7 @@ func TestSessionShowsSummaryPointsAndMessages(t *testing.T) {
 	atelier := f.subject("Atelier")
 	id := f.point(f.episode(s1, "Résumé des pommes", "On a parlé de pommes.", atelier), atelier, "fact", "Les pommes sont rouges")
 	out := f.ok("session", "aaaa")
-	contains(t, out, "Les pommes\n", "Résumé : Résumé des pommes [Atelier]\n", "  On a parlé de pommes.\n",
+	contains(t, out, "Les pommes\n", "Summary: Résumé des pommes [Atelier]\n", "  On a parlé de pommes.\n",
 		fmt.Sprintf("  %d  fact  Atelier  Les pommes sont rouges\n", id), "\n2026-10-27 00:45  user\nune pomme")
 }
 
@@ -336,8 +336,8 @@ func TestSessionWithoutMessagesShownAndForgotten(t *testing.T) {
 	f.point(f.episode(s1, "Résumé gardé", "Les pommes."), "", "fact", "Un fait gardé")
 	os.RemoveAll(f.p.Transcripts)
 	f.ok("rebuild")
-	contains(t, f.ok("session", "aaaa"), "Résumé : Résumé gardé", "Un fait gardé")
-	contains(t, f.ok("forget", "--yes", "session", "aaaa"), "Oublié : la session aaaaaaaa")
+	contains(t, f.ok("session", "aaaa"), "Summary: Résumé gardé", "Un fait gardé")
+	contains(t, f.ok("forget", "--yes", "session", "aaaa"), "Forgotten: session aaaaaaaa")
 	if n := f.count("SELECT count(*) FROM points"); n != 0 {
 		t.Fatalf("%d points", n)
 	}
@@ -346,8 +346,8 @@ func TestSessionWithoutMessagesShownAndForgotten(t *testing.T) {
 func TestSessionUntitledAndMissing(t *testing.T) {
 	f := newFixture(t)
 	f.say(s1, "une pomme")
-	contains(t, f.ok("session", s1), "(sans titre)")
-	contains(t, f.ok("session", "zzzz"), "Session introuvable.")
+	contains(t, f.ok("session", s1), "(untitled)")
+	contains(t, f.ok("session", "zzzz"), "Session not found.")
 }
 
 func TestSessionAmbiguousIsAUsageError(t *testing.T) {
@@ -372,10 +372,10 @@ func TestIndexAndRebuild(t *testing.T) {
 	f := newFixture(t)
 	f.say(s1, "une pomme")
 	out := f.ok("index")
-	contains(t, out, "fichiers : 1\n", "messages : 1\n", "lignes mal formées : 0\n", "fichiers en échec : 0\n")
+	contains(t, out, "files: 1\n", "messages: 1\n", "malformed lines: 0\n", "failed files: 0\n")
 	f.exec("DELETE FROM messages")
 	f.exec("DELETE FROM files")
-	contains(t, f.ok("rebuild"), "messages : 1\n")
+	contains(t, f.ok("rebuild"), "messages: 1\n")
 	if n := f.count("SELECT count(*) FROM messages"); n != 1 {
 		t.Fatalf("%d messages", n)
 	}
@@ -388,7 +388,7 @@ func TestIndexFailureExitsWithOne(t *testing.T) {
 	if err := os.Chmod(path, 0); err != nil {
 		t.Fatal(err)
 	}
-	contains(t, f.fails(1, "index"), "fichiers en échec : 1")
+	contains(t, f.fails(1, "index"), "failed files: 1")
 }
 
 func TestSouvenirsListsFiltersAndMarksUsed(t *testing.T) {
@@ -401,16 +401,16 @@ func TestSouvenirsListsFiltersAndMarksUsed(t *testing.T) {
 	f.exec("UPDATE points SET closed_at = '2026-10-27T00:00:00.000Z' WHERE id = ?", closed)
 	all := f.ok("souvenirs")
 	contains(t, all, "decision  Atelier  Garder sqlite", fmt.Sprintf("%d  pending  Atelier  Écrire la doc\n", pending),
-		fmt.Sprintf("%d  pending  Atelier  Déjà fait  [clos]", closed))
+		fmt.Sprintf("%d  pending  Atelier  Déjà fait  [closed]", closed))
 	open := f.ok("souvenirs", "--open")
 	lacks(t, open, "Garder sqlite", "Déjà fait")
 	contains(t, open, "Écrire la doc")
 	only := f.ok("souvenirs", "sqlite", "--kind", "decision", "--limit", "5")
 	lacks(t, only, "Écrire la doc")
 	if n := f.count("SELECT count(*) FROM point_usage"); n != 3 {
-		t.Fatalf("%d points marqués utilisés, attendu 3", n)
+		t.Fatalf("%d points marked used, want 3", n)
 	}
-	contains(t, f.ok("souvenirs", "rien", "de", "tel"), "Aucun souvenir.")
+	contains(t, f.ok("souvenirs", "rien", "de", "tel"), "No memories.")
 }
 
 func TestSouvenirsHistoryFlag(t *testing.T) {
@@ -434,8 +434,8 @@ func TestSouvenirsSubjectShowsSynthesisAndDescendants(t *testing.T) {
 	f.point(f.episode(s1, "t", "r", reseau), reseau, "fact", "Le routeur est au salon")
 	f.exec("INSERT INTO syntheses(subject_uid, uid, text, created_at, updated_at) VALUES (?, 'y', 'La maison est calme.', 't', 't')", maison)
 	out := f.ok("souvenirs", "--subject", "maison")
-	contains(t, out, "Synthèse : La maison est calme.\n", "Le routeur est au salon")
-	contains(t, f.fails(2, "souvenirs", "--subject", "nulle part"), "sujet inconnu")
+	contains(t, out, "Synthesis: La maison est calme.\n", "Le routeur est au salon")
+	contains(t, f.fails(2, "souvenirs", "--subject", "nulle part"), "unknown subject")
 }
 
 func TestSubjectsTree(t *testing.T) {
@@ -456,11 +456,11 @@ func TestSubjectsTree(t *testing.T) {
 	if out := f.ok("subjects", "domotique"); out != "Maison  [domotique]\n  Réseau\n    depends_on Routeur\n" {
 		t.Fatalf("got %q", out)
 	}
-	contains(t, f.fails(2, "subjects", "inconnu"), "sujet inconnu")
+	contains(t, f.fails(2, "subjects", "inconnu"), "unknown subject")
 }
 
 func TestSubjectsEmpty(t *testing.T) {
-	contains(t, newFixture(t).ok("subjects"), "Aucun sujet.")
+	contains(t, newFixture(t).ok("subjects"), "No subjects.")
 }
 
 func TestMemoForTheCurrentRepoAndForANamedSubject(t *testing.T) {
@@ -473,19 +473,19 @@ func TestMemoForTheCurrentRepoAndForANamedSubject(t *testing.T) {
 	dir := t.TempDir()
 	f.exec("INSERT INTO repo_cache VALUES (?, ?, 't')", dir, repo)
 	t.Chdir(dir)
-	contains(t, f.ok("memo"), "Sujet « widget »", "Utiliser sqlite")
-	contains(t, f.ok("memo", "--subject", "widget"), "Sujet « widget »", "Utiliser sqlite")
-	contains(t, f.fails(2, "memo", "--subject", "inconnu"), "sujet inconnu")
+	contains(t, f.ok("memo"), "Subject \"widget\"", "Utiliser sqlite")
+	contains(t, f.ok("memo", "--subject", "widget"), "Subject \"widget\"", "Utiliser sqlite")
+	contains(t, f.fails(2, "memo", "--subject", "inconnu"), "unknown subject")
 	if n := f.count("SELECT count(*) FROM point_usage"); n != 0 {
-		t.Fatalf("paul memo a marqué %d points", n)
+		t.Fatalf("paul memo marked %d points", n)
 	}
 	t.Chdir(t.TempDir())
-	contains(t, f.ok("memo"), "Dernières sessions :")
+	contains(t, f.ok("memo"), "Latest sessions:")
 	f.exec("DELETE FROM episode_subjects")
 	f.exec("DELETE FROM episodes")
 	f.exec("DELETE FROM sessions")
 	f.exec("DELETE FROM messages")
-	contains(t, f.ok("memo"), "Aucun souvenir pour ce dossier.")
+	contains(t, f.ok("memo"), "No memories for this directory.")
 }
 
 func TestMemoWithADeletedWorkingDirectory(t *testing.T) {
@@ -495,19 +495,19 @@ func TestMemoWithADeletedWorkingDirectory(t *testing.T) {
 	if err := os.RemoveAll(gone); err != nil {
 		t.Fatal(err)
 	}
-	contains(t, f.fails(2, "memo"), "le dossier courant n'existe plus")
+	contains(t, f.fails(2, "memo"), "the current directory no longer exists")
 }
 
 func TestSummarizeTranslatesStatuses(t *testing.T) {
 	f := newFixture(t)
-	contains(t, f.ok("summarize"), "Aucune session à résumer.")
+	contains(t, f.ok("summarize"), "No session to summarize.")
 	f.say(s1, "une pomme")
 	out := f.fails(1, "summarize", "--all", "--session", "aaaa")
-	contains(t, out, "aaaaaaaa  échec", "Total : 0 points")
+	contains(t, out, "aaaaaaaa  failed", "Total: 0 points")
 }
 
 func TestSummarizeForceNeedsASession(t *testing.T) {
-	contains(t, newFixture(t).fails(2, "summarize", "--force"), "--force exige --session")
+	contains(t, newFixture(t).fails(2, "summarize", "--force"), "--force requires --session")
 }
 
 func TestSummarizeWhileAnotherRuns(t *testing.T) {
@@ -520,7 +520,7 @@ func TestSummarizeWhileAnotherRuns(t *testing.T) {
 		t.Fatal(err, acquired)
 	}
 	defer release()
-	contains(t, f.ok("summarize"), "Un résumé est déjà en cours.")
+	contains(t, f.ok("summarize"), "A summary is already running.")
 }
 
 func TestForgetWithoutYesDescribesAndExitsWithTwo(t *testing.T) {
@@ -529,9 +529,9 @@ func TestForgetWithoutYesDescribesAndExitsWithTwo(t *testing.T) {
 	f.ok("index")
 	id := f.point(f.episode(s1, "t", "r"), "", "fact", "Un fait")
 	out := f.fails(2, "forget", "point", fmt.Sprint(id))
-	contains(t, out, "Effacerait de la mémoire le point", "Un fait", "--yes")
+	contains(t, out, "Would erase from memory: point", "Un fait", "--yes")
 	out = f.fails(2, "forget", "session", "aaaa")
-	contains(t, out, "Effacerait de la mémoire la session aaaaaaaa", "reste sur le disque")
+	contains(t, out, "Would erase from memory: session aaaaaaaa", "stays on disk")
 	if n := f.count("SELECT count(*) FROM points"); n != 1 {
 		t.Fatalf("%d points", n)
 	}
@@ -542,17 +542,17 @@ func TestForgetPointAndSession(t *testing.T) {
 	f.say(s1, "une pomme")
 	f.ok("index")
 	id := f.point(f.episode(s1, "t", "r"), "", "fact", "Un fait")
-	contains(t, f.ok("forget", "point", fmt.Sprint(id), "--yes"), "Oublié : le point")
+	contains(t, f.ok("forget", "point", fmt.Sprint(id), "--yes"), "Forgotten: point")
 	if n := f.count("SELECT count(*) FROM points"); n != 0 {
 		t.Fatalf("%d points", n)
 	}
-	contains(t, f.ok("forget", "--yes", "session", "aaaa"), "Oublié : la session aaaaaaaa")
+	contains(t, f.ok("forget", "--yes", "session", "aaaa"), "Forgotten: session aaaaaaaa")
 	if n := f.count("SELECT count(*) FROM messages"); n != 0 {
 		t.Fatalf("%d messages", n)
 	}
-	contains(t, f.fails(2, "forget", "point", "999", "--yes"), "point introuvable : 999")
-	contains(t, f.fails(2, "forget", "session", "zzzz", "--yes"), "session introuvable")
-	contains(t, f.fails(2, "forget", "point", "abc"), "nombre invalide")
+	contains(t, f.fails(2, "forget", "point", "999", "--yes"), "point not found: 999")
+	contains(t, f.fails(2, "forget", "session", "zzzz", "--yes"), "session not found")
+	contains(t, f.fails(2, "forget", "point", "abc"), "invalid number")
 	f.fails(2, "forget", "tout", "1")
 	f.fails(2, "forget", "point")
 }
@@ -560,14 +560,14 @@ func TestForgetPointAndSession(t *testing.T) {
 func TestOldCommandsAreUnknown(t *testing.T) {
 	f := newFixture(t)
 	for _, name := range []string{"label", "access", "projects", "jour", "oublier", "resumer", "classer"} {
-		contains(t, f.fails(2, name), "commande inconnue : "+name)
+		contains(t, f.fails(2, name), "unknown command: "+name)
 	}
 }
 
 func TestNotYetAvailableCommands(t *testing.T) {
 	f := newFixture(t)
-	contains(t, f.fails(2, "sync"), "pas encore disponible")
-	contains(t, f.ok("--help"), "  sync                          pas encore disponible\n")
+	contains(t, f.fails(2, "sync"), "not available yet")
+	contains(t, f.ok("--help"), "  sync                          not available yet\n")
 }
 
 func TestMigrateRefusals(t *testing.T) {
@@ -575,13 +575,13 @@ func TestMigrateRefusals(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "brain.db")
 	f.ok("index")
 	f.episode(s1, "t", "r")
-	contains(t, f.fails(1, "migrate", "--from", missing), "paul : reprise impossible : paul.db contient déjà des souvenirs")
+	contains(t, f.fails(1, "migrate", "--from", missing), "paul: migration impossible: paul.db already contains memories")
 	f.db().Close()
 	os.Remove(f.p.DB())
-	contains(t, f.fails(1, "migrate", "--from", missing), "paul : reprise impossible : ancienne base introuvable : "+missing)
+	contains(t, f.fails(1, "migrate", "--from", missing), "paul: migration impossible: old database not found: "+missing)
 	logged, _ := os.ReadFile(f.p.Log())
-	contains(t, string(logged), "migrate : paul.db contient déjà des souvenirs")
-	contains(t, string(logged), "migrate : ancienne base introuvable : "+missing)
+	contains(t, string(logged), "migrate: paul.db already contains memories")
+	contains(t, string(logged), "migrate: old database not found: "+missing)
 	f.fails(2, "migrate", "--inconnue")
 }
 
@@ -604,7 +604,7 @@ func (l *lockedBuffer) String() string {
 
 func TestWebPrintsItsAddressAndStopsOnInterrupt(t *testing.T) {
 	f := newFixture(t)
-	contains(t, f.fails(2, "web", "--port", "1"), "web : option inconnue : -port")
+	contains(t, f.fails(2, "web", "--port", "1"), "web: unknown option: -port")
 	var out, errOut lockedBuffer
 	done := make(chan int)
 	go func() { done <- Main([]string{"web", "--no-open"}, &out, &errOut) }()
@@ -630,7 +630,7 @@ func TestWebPrintsItsAddressAndStopsOnInterrupt(t *testing.T) {
 
 func TestNoCommandPrintsUsage(t *testing.T) {
 	f := newFixture(t)
-	contains(t, f.fails(2), "Usage : paul <commande>")
+	contains(t, f.fails(2), "Usage: paul <command>")
 	saved := Version
 	t.Cleanup(func() { Version = saved })
 	Version = "1.2.3"
@@ -649,11 +649,11 @@ func TestLogNeverOnStderr(t *testing.T) {
 	var stray bytes.Buffer
 	stdLogTo(&stray, t)
 	code, out, errOut := f.run("index")
-	if code != 1 || strings.Contains(out+errOut, "indexation échouée") || stray.Len() != 0 || errOut != "" && !strings.HasPrefix(errOut, "paul : échec de index : voir paul.log") {
+	if code != 1 || strings.Contains(out+errOut, "indexing failed") || stray.Len() != 0 || errOut != "" && !strings.HasPrefix(errOut, "paul: index failed: see paul.log") {
 		t.Fatalf("journal hors de paul.log : code %d\n%s%s\n%s", code, out, errOut, stray.String())
 	}
 	raw, err := os.ReadFile(f.p.Log())
-	if err != nil || !strings.Contains(string(raw), "indexation échouée") {
+	if err != nil || !strings.Contains(string(raw), "indexing failed") {
 		t.Fatalf("paul.log : %q %v", raw, err)
 	}
 	if info, _ := os.Stat(f.p.Log()); info.Mode().Perm() != 0o600 {
@@ -661,7 +661,7 @@ func TestLogNeverOnStderr(t *testing.T) {
 	}
 	log := stdLogWriter()
 	if log != &stray {
-		t.Fatalf("le journal standard n'est pas restauré")
+		t.Fatalf("the standard log is not restored")
 	}
 }
 
@@ -676,7 +676,7 @@ func stdLogWriter() io.Writer { return log.Writer() }
 func TestHelpPrintsUsageAndExitsWithZero(t *testing.T) {
 	f := newFixture(t)
 	for _, args := range [][]string{{"-h"}, {"--help"}, {"search", "--help"}, {"souvenirs", "-h"}, {"forget", "--help"}} {
-		contains(t, f.ok(args...), "Usage : paul <commande>")
+		contains(t, f.ok(args...), "Usage: paul <command>")
 	}
 }
 
@@ -689,7 +689,7 @@ func TestFailureLineNamesNoGoType(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, errOut := f.run("souvenirs")
-	if errOut != "paul : échec de souvenirs : voir paul.log\n" {
+	if errOut != "paul: souvenirs failed: see paul.log\n" {
 		t.Fatalf("got %q", errOut)
 	}
 }
@@ -697,9 +697,9 @@ func TestFailureLineNamesNoGoType(t *testing.T) {
 func TestDoubleDashEndsTheOptions(t *testing.T) {
 	f := newFixture(t)
 	f.say(s1, "une pomme since x")
-	contains(t, f.ok("search", "--", "--since", "pomme"), "«pomme»")
-	contains(t, f.ok("search", "--", "pomme", "--since", "x"), "«pomme»")
-	contains(t, f.fails(2, "search", "pomme", "--since"), "valeur manquante")
+	contains(t, f.ok("search", "--", "--since", "pomme"), "**pomme**")
+	contains(t, f.ok("search", "--", "pomme", "--since", "x"), "**pomme**")
+	contains(t, f.fails(2, "search", "pomme", "--since"), "missing value")
 }
 
 func TestForgetSessionDescriptionCountsWhatGoes(t *testing.T) {
@@ -709,7 +709,7 @@ func TestForgetSessionDescriptionCountsWhatGoes(t *testing.T) {
 	ep := f.episode(s1, "t", "r")
 	f.point(ep, "", "fact", "A")
 	f.point(ep, "", "fact", "B")
-	contains(t, f.fails(2, "forget", "session", "aaaa"), "(2 messages, 1 épisodes, 2 points)")
+	contains(t, f.fails(2, "forget", "session", "aaaa"), "(2 messages, 1 episodes, 2 points)")
 }
 
 func TestAmbiguousSubjectListsCandidates(t *testing.T) {
@@ -717,7 +717,7 @@ func TestAmbiguousSubjectListsCandidates(t *testing.T) {
 	a := f.subject("Alpha", "jumeau")
 	b := f.subject("Beta", "jumeau")
 	out := f.fails(2, "souvenirs", "--subject", "jumeau")
-	contains(t, out, "plusieurs sujets portent ce nom : jumeau", "Alpha "+a, "Beta "+b)
+	contains(t, out, "several subjects share this name: jumeau", "Alpha "+a, "Beta "+b)
 	f.fails(2, "memo", "--subject", "jumeau")
 }
 
@@ -728,7 +728,7 @@ func TestBareUnknownAndHelpDoNotCreateTheHome(t *testing.T) {
 	f.ok("--help")
 	f.ok("--version")
 	if _, err := os.Stat(f.p.Home); !os.IsNotExist(err) {
-		t.Fatalf("PAUL_HOME créé : %v", err)
+		t.Fatalf("PAUL_HOME created: %v", err)
 	}
 }
 

@@ -1,4 +1,4 @@
-// Package cli is the paul command line: parsing, dispatch and the French messages around the other packages.
+// Package cli is the paul command line: parsing, dispatch and the English messages around the other packages.
 package cli
 
 import (
@@ -29,15 +29,15 @@ var Version = "dev"
 const (
 	busyTimeout = 30 * time.Second
 	allPoints   = 1 << 30
-	usage       = `paul : mémoire persistante pour Claude Code
+	usage       = `paul: persistent memory for Claude Code
 
-Usage : paul <commande> [options]
+Usage: paul <command> [options]
 
-  search <mots>                 --subject --since --until --limit
-  souvenirs [mots]              --kind --subject --open --history --limit
+  search <words>                --subject --since --until --limit
+  souvenirs [words]             --kind --subject --open --history --limit
   session <id>
-  day <AAAA-MM-JJ>
-  subjects [mots]               l'arbre des sujets et leurs liens
+  day <YYYY-MM-DD>
+  subjects [words]              the subject tree and its links
   memo                          --subject
   summarize                     --session --limit --all --force
   forget point|session <id>     --yes
@@ -46,7 +46,7 @@ Usage : paul <commande> [options]
   web                           --no-open
   hook start|prompt|end
   migrate                       --from --root
-  sync                          pas encore disponible
+  sync                          not available yet
 `
 )
 
@@ -65,7 +65,7 @@ type command func(e *env, args []string) (int, error)
 
 func commands() map[string]command {
 	notYet := func(name string) command {
-		return func(*env, []string) (int, error) { return 0, usagef("%s : pas encore disponible", name) }
+		return func(*env, []string) (int, error) { return 0, usagef("%s: not available yet", name) }
 	}
 	return map[string]command{
 		"search": searchCmd, "souvenirs": souvenirs, "session": session, "day": day,
@@ -92,7 +92,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	}
 	run, known := commands()[args[0]]
 	if !known {
-		fmt.Fprintf(stderr, "paul : commande inconnue : %s\n\n%s", args[0], usage)
+		fmt.Fprintf(stderr, "paul: unknown command: %s\n\n%s", args[0], usage)
 		return 2
 	}
 	p := paths.Default()
@@ -111,11 +111,11 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	var missingPoint *memory.ErrPointNotFound
 	if errors.As(err, new(usageError)) || errors.Is(err, search.ErrEmptyQuery) || errors.As(err, &ambiguousSession) ||
 		errors.As(err, &ambiguousSubject) || errors.As(err, &unknownSubject) || errors.As(err, &missingPoint) {
-		fmt.Fprintf(stderr, "paul : %v\n", err)
+		fmt.Fprintf(stderr, "paul: %v\n", err)
 		return 2
 	}
-	log.Printf("%s : %v", args[0], err)
-	fmt.Fprintf(stderr, "paul : échec de %s : voir paul.log\n", args[0])
+	log.Printf("%s: %v", args[0], err)
+	fmt.Fprintf(stderr, "paul: %s failed: see paul.log\n", args[0])
 	return 1
 }
 
@@ -147,7 +147,7 @@ func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 			if errors.Is(err, flag.ErrHelp) {
 				return nil, err
 			}
-			return nil, usagef("%s : %s", fs.Name(), french(err))
+			return nil, usagef("%s: %s", fs.Name(), flagError(err))
 		}
 		if fs.NArg() == 0 {
 			return append(positional, after...), nil
@@ -157,15 +157,15 @@ func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
 	}
 }
 
-func french(err error) string {
+func flagError(err error) string {
 	text := err.Error()
 	switch {
 	case strings.HasPrefix(text, "flag provided but not defined: "):
-		return "option inconnue : " + strings.TrimPrefix(text, "flag provided but not defined: ")
+		return "unknown option: " + strings.TrimPrefix(text, "flag provided but not defined: ")
 	case strings.HasPrefix(text, "flag needs an argument: "):
-		return "valeur manquante pour " + strings.TrimPrefix(text, "flag needs an argument: ")
+		return "missing value for " + strings.TrimPrefix(text, "flag needs an argument: ")
 	}
-	return "option invalide : " + text
+	return "invalid option: " + text
 }
 
 func newFlags(name string) *flag.FlagSet { return flag.NewFlagSet(name, flag.ContinueOnError) }
@@ -176,7 +176,7 @@ func count(text string, fallback int) (int, error) {
 	}
 	n, err := strconv.Atoi(text)
 	if err != nil || n < 1 || strconv.Itoa(n) != text {
-		return 0, usagef("nombre invalide : %s", text)
+		return 0, usagef("invalid number: %s", text)
 	}
 	return n, nil
 }
@@ -187,7 +187,7 @@ func parseDay(text string) (*time.Time, error) {
 	}
 	t, err := time.ParseInLocation("2006-01-02", text, time.Local)
 	if err != nil {
-		return nil, usagef("date invalide : %s (attendu AAAA-MM-JJ)", text)
+		return nil, usagef("invalid date: %s (expected YYYY-MM-DD)", text)
 	}
 	return &t, nil
 }
