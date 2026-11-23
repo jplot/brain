@@ -16,6 +16,7 @@ import (
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/index"
 	"github.com/jplot/brain/internal/paths"
+	"github.com/jplot/brain/internal/subjects"
 )
 
 type world struct {
@@ -79,6 +80,30 @@ func (w *world) add(cwd, session, text, ts string, extra ...map[string]any) {
 	writeTranscript(w.t, w.p, fmt.Sprintf("f%d", w.files), session, append([]map[string]any{entry(session, cwd, text, ts)}, extra...)...)
 	if stats := index.All(w.db, w.p); stats.Failed != 0 {
 		w.t.Fatalf("index: %+v", stats)
+	}
+}
+
+func (w *world) subject(name string, parent *string) string {
+	w.t.Helper()
+	uid, err := subjects.Create(w.db, name, nil, parent)
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	return uid
+}
+
+func (w *world) about(session string, subjectUIDs ...string) {
+	w.t.Helper()
+	w.files++
+	uid := fmt.Sprint("ep", w.files)
+	if _, err := w.db.Exec("INSERT INTO episodes(uid, session_id, start_ts, end_ts, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+		uid, session, defaultTS, defaultTS, defaultTS, defaultTS); err != nil {
+		w.t.Fatal(err)
+	}
+	for _, s := range subjectUIDs {
+		if _, err := w.db.Exec("INSERT INTO episode_subjects(episode_uid, subject_uid) VALUES (?, ?)", uid, s); err != nil {
+			w.t.Fatal(err)
+		}
 	}
 }
 
@@ -159,46 +184,6 @@ func paris(t *testing.T) *time.Location {
 		t.Skip("no tzdata:", err)
 	}
 	return loc
-}
-
-func TestStaysInScope(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestAccessOpensOneWayWithoutPropagation(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestRevokedAccessCutsAtOnce(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestRootsSeeEverything(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestEverythingScope(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestLabelFilter(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestFilterDoesNotExceedScope(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestRootsMessageInvisibleElsewhere(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestMessageWithoutProjectRowStaysVisible(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestScopeForLeavesNoRowForNewFolder(t *testing.T) {
-	t.Skip("Task 9")
 }
 
 func TestSpecialCharacters(t *testing.T) {
@@ -351,17 +336,9 @@ func TestSinceIncludesLocalMidnight(t *testing.T) {
 	same(t, len(w.search("minuit", Filter{Since: &d})), 1)
 }
 
-func TestDayRespectsScope(t *testing.T) {
-	t.Skip("Task 9")
-}
-
 func (w *world) mixed() {
 	w.add(w.dir("A"), "mix", "depuis A", "2026-10-20T08:00:00.000Z")
 	w.add(w.dir("C"), "mix", "depuis C", "2026-10-21T09:00:00.000Z", aiTitle("mix", "Titre mixte"))
-}
-
-func TestSessionOutsideScope(t *testing.T) {
-	t.Skip("Task 9")
 }
 
 func TestSessionViewSpansAllMessages(t *testing.T) {
@@ -448,18 +425,6 @@ func TestListIsPaged(t *testing.T) {
 	same(t, len(w.list(ListFilter{Before: second[1].EndedAt})), 0)
 }
 
-func TestListFiltersProjectAndLabel(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestFilteredListKeepsScopeRows(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestFilteredListSortsAndCutsOnLastVisible(t *testing.T) {
-	t.Skip("Task 9")
-}
-
 func TestPagingLosesNothingOnTies(t *testing.T) {
 	w := newWorld(t)
 	for _, n := range []string{"t1", "t2", "t3"} {
@@ -471,12 +436,110 @@ func TestPagingLosesNothingOnTies(t *testing.T) {
 	same(t, ids(w.list(ListFilter{Before: page[2].EndedAt})), []string{"t0"})
 }
 
-func TestTitleHiddenWhenSessionLeavesScope(t *testing.T) {
-	t.Skip("Task 9")
+func (w *world) aboutWorld() (maison, reseau, outil string) {
+	w.indexed()
+	maison = w.subject("Maison", nil)
+	reseau = w.subject("Réseau", &maison)
+	outil = w.subject("Outil", nil)
+	w.about("sess-A", maison)
+	w.about("sess-B", reseau, outil)
+	return maison, reseau, outil
 }
 
-func TestScopeForLeavesCallerTransaction(t *testing.T) {
-	t.Skip("Task 9")
+func TestSearchWithoutSubjectSeesEverything(t *testing.T) {
+	w := newWorld(t)
+	w.aboutWorld()
+	same(t, len(w.search("mot", Filter{})), 3)
+}
+
+func TestSearchBySubjectIncludesDescendants(t *testing.T) {
+	w := newWorld(t)
+	_, reseau, outil := w.aboutWorld()
+	sessions := func(f Filter) []string {
+		var out []string
+		for _, h := range w.search("mot", f) {
+			out = append(out, h.SessionID)
+		}
+		slices.Sort(out)
+		return out
+	}
+	same(t, sessions(Filter{Subject: "maison"}), []string{"sess-A", "sess-B"})
+	same(t, sessions(Filter{Subject: "RESEAU"}), []string{"sess-B"})
+	same(t, sessions(Filter{Subject: outil}), []string{"sess-B"})
+	same(t, sessions(Filter{Subject: reseau}), []string{"sess-B"})
+	same(t, sessions(Filter{Subject: "inconnu"}), []string{})
+}
+
+func TestSearchAmbiguousSubject(t *testing.T) {
+	w := newWorld(t)
+	w.indexed()
+	w.subject("Lune", nil)
+	if _, err := subjects.Create(w.db, "Satellite", []string{"lune"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	var amb *ErrAmbiguousSubject
+	for name, run := range map[string]func() error{
+		"search": func() error { _, err := Search(w.db, "mot", Filter{Subject: "lune"}); return err },
+		"list":   func() error { _, err := ListSessions(w.db, ListFilter{Subject: "lune"}); return err },
+	} {
+		if err := run(); !errors.As(err, &amb) || len(amb.Candidates) != 2 {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestRowsCarrySubjectNames(t *testing.T) {
+	w := newWorld(t)
+	w.aboutWorld()
+	hits := w.search("mot de B", Filter{})
+	same(t, hits[0].Subjects, []string{"Outil", "Réseau"})
+	rows := w.list(ListFilter{})
+	by := map[string][]string{}
+	for _, r := range rows {
+		by[r.ID] = r.Subjects
+	}
+	same(t, by, map[string][]string{"sess-A": {"Maison"}, "sess-B": {"Outil", "Réseau"}, "sess-C": nil})
+	row, _ := w.view("sess-B")
+	same(t, row.Subjects, []string{"Outil", "Réseau"})
+	same(t, w.day(day(t, time.UTC, 2026, 10, 20))[0].Subjects, []string{"Maison"})
+}
+
+func TestListBySubject(t *testing.T) {
+	w := newWorld(t)
+	w.aboutWorld()
+	same(t, ids(w.list(ListFilter{Subject: "maison"})), []string{"sess-A", "sess-B"})
+	same(t, ids(w.list(ListFilter{Subject: "outil"})), []string{"sess-B"})
+	same(t, ids(w.list(ListFilter{Subject: "inconnu"})), []string{})
+}
+
+func TestFilteredListPagesByLastMessage(t *testing.T) {
+	w := newWorld(t)
+	sujet := w.subject("Sujet", nil)
+	for _, n := range []string{"t1", "t2", "t3"} {
+		w.add(w.dir("A"), n, "x", defaultTS)
+		w.about(n, sujet)
+	}
+	w.add(w.dir("A"), "t0", "x", "2026-10-19T10:00:00.000Z")
+	w.about("t0", sujet)
+	w.add(w.dir("A"), "autre", "x", "2026-10-21T10:00:00.000Z")
+	page := w.list(ListFilter{Subject: "sujet", Limit: 2})
+	same(t, ids(page), []string{"t1", "t2", "t3"})
+	same(t, ids(w.list(ListFilter{Subject: "sujet", Before: page[2].EndedAt})), []string{"t0"})
+}
+
+func TestSubjectSearchInsideTransaction(t *testing.T) {
+	w := newWorld(t)
+	w.aboutWorld()
+	tx, err := w.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	hits, err := Search(tx, "mot", Filter{Subject: "outil"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	same(t, len(hits), 1)
 }
 
 func TestMessagesInTimeOrder(t *testing.T) {
@@ -494,10 +557,6 @@ func TestListSortsOnLastMessage(t *testing.T) {
 	w.add(w.dir("A"), "s2", "c", "2026-10-22T08:00:00.000Z")
 	same(t, ids(w.list(ListFilter{})), []string{"s1", "s2"})
 	same(t, ids(w.list(ListFilter{Before: "2026-10-23T00:00:00.000Z"})), []string{"s2"})
-}
-
-func TestNames(t *testing.T) {
-	t.Skip("Task 9")
 }
 
 func TestConcurrentSearchesAndIndexersFromNewFolder(t *testing.T) {

@@ -2,10 +2,14 @@
 package memory
 
 import (
+	stdcmp "cmp"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,7 +21,7 @@ import (
 const (
 	day       = "2006-01-02"
 	pointCols = "p.id, p.episode_id, p.uid, p.kind, p.text, p.importance, p.source_ts, p.created_at," +
-		" p.closed_at, p.corrected, p.updated_at"
+		" p.closed_at, p.corrected, p.updated_at, p.subject_uid, s.name, u.last_used_at"
 )
 
 var (
@@ -39,6 +43,9 @@ type Point struct {
 	ClosedAt            *string
 	Corrected           bool
 	UpdatedAt           string
+	SubjectUID          *string
+	SubjectName         *string
+	LastUsedAt          *string
 }
 
 type Episode struct {
@@ -48,15 +55,19 @@ type Episode struct {
 	CreatedAt                      string
 	SummaryStale                   bool
 	UpdatedAt                      string
+	Subjects                       []string
 }
 
 // Since and Until are calendar days (YYYY-MM-DD) in the local zone, both included.
+// Subject is a name, keyword or uid and covers its descendants; replaced points show only with History.
+// Order "score" ranks by Score with the terms of Text; the default is importance then recency.
 type PointFilter struct {
-	Kind, Text         string
-	OpenOnly           bool
-	PointID, EpisodeID int64
-	Since, Until       string
-	Limit              int
+	Kind, Subject, Text string
+	Order               string
+	OpenOnly, History   bool
+	PointID, EpisodeID  int64
+	Since, Until        string
+	Limit               int
 }
 
 func now() string { return db.Stamp(time.Time{}) }
@@ -103,6 +114,20 @@ func VisiblePoints(q db.Querier, f PointFilter) ([]Point, error) {
 	if f.OpenOnly {
 		clauses = append(clauses, "p.kind = 'pending' AND p.closed_at IS NULL")
 	}
+	if !f.History {
+		clauses = append(clauses, "p.superseded_by_uid IS NULL")
+	}
+	if f.Subject != "" {
+		tree, err := search.SubjectTree(q, f.Subject)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := json.Marshal(append([]string{}, tree...))
+		if err != nil {
+			return nil, err
+		}
+		add("p.subject_uid IN (SELECT value FROM json_each(?))", string(raw))
+	}
 	if strings.TrimSpace(f.Text) != "" {
 		match, err := search.ToFTSQuery(f.Text)
 		if err != nil {
@@ -118,8 +143,37 @@ func VisiblePoints(q db.Querier, f PointFilter) ([]Point, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := q.QueryContext(background, "SELECT "+pointCols+" FROM points p"+
-		where+" ORDER BY p.importance DESC, p.created_at DESC, p.id DESC LIMIT ?", append(args, limit)...)
+	order, cut := " ORDER BY p.importance DESC, p.created_at DESC, p.id DESC LIMIT ?", []any{limit}
+	if f.Order == "score" {
+		order, cut = "", nil
+	}
+	points, err := queryPoints(q, "SELECT "+pointCols+" FROM points p"+
+		" LEFT JOIN subjects s ON s.uid = p.subject_uid LEFT JOIN point_usage u ON u.uid = p.uid"+
+		where+order, append(args, cut...))
+	if err != nil || f.Order != "score" {
+		return points, err
+	}
+	ids := make([]int64, len(points))
+	for i, p := range points {
+		ids[i] = p.ID
+	}
+	relevance, err := Relevance(q, search.Terms(f.Text), ids)
+	if err != nil {
+		return nil, err
+	}
+	scored := Score(points, relevance, time.Now())
+	if len(scored) > limit {
+		scored = scored[:limit]
+	}
+	out := make([]Point, len(scored))
+	for i, s := range scored {
+		out[i] = s.Point
+	}
+	return out, nil
+}
+
+func queryPoints(q db.Querier, query string, args []any) ([]Point, error) {
+	rows, err := q.QueryContext(background, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -127,13 +181,18 @@ func VisiblePoints(q db.Querier, f PointFilter) ([]Point, error) {
 	var out []Point
 	for rows.Next() {
 		var p Point
-		var closed sql.NullString
+		var closed, subjectUID, subjectName, lastUsed sql.NullString
 		if err := rows.Scan(&p.ID, &p.EpisodeID, &p.UID, &p.Kind, &p.Text, &p.Importance, &p.SourceTS,
-			&p.CreatedAt, &closed, &p.Corrected, &p.UpdatedAt); err != nil {
+			&p.CreatedAt, &closed, &p.Corrected, &p.UpdatedAt, &subjectUID, &subjectName, &lastUsed); err != nil {
 			return nil, err
 		}
-		if closed.Valid {
-			p.ClosedAt = &closed.String
+		for _, v := range []struct {
+			from sql.NullString
+			to   **string
+		}{{closed, &p.ClosedAt}, {subjectUID, &p.SubjectUID}, {subjectName, &p.SubjectName}, {lastUsed, &p.LastUsedAt}} {
+			if v.from.Valid {
+				*v.to = &v.from.String
+			}
 		}
 		out = append(out, p)
 	}
@@ -142,7 +201,10 @@ func VisiblePoints(q db.Querier, f PointFilter) ([]Point, error) {
 
 func VisibleEpisodes(q db.Querier, sessionID string) ([]Episode, error) {
 	rows, err := q.QueryContext(background, "SELECT id, uid, session_id, start_ts, end_ts, title, summary,"+
-		" created_at, summary_stale, updated_at FROM episodes WHERE session_id = ? ORDER BY start_ts", sessionID)
+		" created_at, summary_stale, updated_at,"+
+		" (SELECT json_group_array(name) FROM (SELECT s.name FROM episode_subjects es JOIN subjects s ON s.uid = es.subject_uid"+
+		" WHERE es.episode_uid = episodes.uid ORDER BY s.name, s.uid))"+
+		" FROM episodes WHERE session_id = ? ORDER BY start_ts", sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -151,8 +213,12 @@ func VisibleEpisodes(q db.Querier, sessionID string) ([]Episode, error) {
 	for rows.Next() {
 		var e Episode
 		var title, summary sql.NullString
+		var names string
 		if err := rows.Scan(&e.ID, &e.UID, &e.SessionID, &e.StartTS, &e.EndTS, &title, &summary,
-			&e.CreatedAt, &e.SummaryStale, &e.UpdatedAt); err != nil {
+			&e.CreatedAt, &e.SummaryStale, &e.UpdatedAt, &names); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(names), &e.Subjects); err != nil {
 			return nil, err
 		}
 		if title.Valid {
@@ -164,6 +230,93 @@ func VisibleEpisodes(q db.Querier, sessionID string) ([]Episode, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+type Scored struct {
+	Point
+	Score float64
+}
+
+// Score sums recency, importance and relevance with equal weights, each in [0,1].
+func Score(points []Point, relevance map[int64]float64, now time.Time) []Scored {
+	out := make([]Scored, len(points))
+	for i, p := range points {
+		hours := math.Inf(1)
+		at := p.CreatedAt
+		if p.LastUsedAt != nil {
+			at = *p.LastUsedAt
+		}
+		if t, err := time.Parse(db.UTCFormat, at); err == nil {
+			hours = max(now.Sub(t).Hours(), 0)
+		}
+		out[i] = Scored{p, math.Pow(0.995, hours) + float64(p.Importance-1)/4 + relevance[p.ID]}
+	}
+	slices.SortFunc(out, func(a, b Scored) int {
+		if a.Score != b.Score {
+			return stdcmp.Compare(b.Score, a.Score)
+		}
+		return stdcmp.Compare(b.ID, a.ID)
+	})
+	return out
+}
+
+// Relevance is the BM25 of points_fts for any of the terms, min-max normalized over ids.
+// FTS5 ranks the best match lowest (negative), so the raw value is its opposite; a
+// candidate without a match counts 0. All candidates tied above 0 get 1, tied at 0 get 0.
+func Relevance(q db.Querier, terms []string, ids []int64) (map[int64]float64, error) {
+	out := make(map[int64]float64, len(ids))
+	for _, id := range ids {
+		out[id] = 0
+	}
+	if len(terms) == 0 || len(ids) == 0 {
+		return out, nil
+	}
+	raw, err := json.Marshal(ids)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.QueryContext(background, "SELECT rowid, -bm25(points_fts) FROM points_fts"+
+		" WHERE points_fts MATCH ? AND rowid IN (SELECT value FROM json_each(?))", search.MatchAny(terms), string(raw))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var score float64
+		if err := rows.Scan(&id, &score); err != nil {
+			return nil, err
+		}
+		out[id] = score
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	lo, hi := math.Inf(1), math.Inf(-1)
+	for _, v := range out {
+		lo, hi = min(lo, v), max(hi, v)
+	}
+	for id, v := range out {
+		switch {
+		case hi > lo:
+			out[id] = (v - lo) / (hi - lo)
+		case hi > 0:
+			out[id] = 1
+		default:
+			out[id] = 0
+		}
+	}
+	return out, nil
+}
+
+func MarkUsed(q db.Querier, uids []string, at time.Time) error {
+	for _, uid := range uids {
+		if _, err := q.ExecContext(background, "INSERT INTO point_usage(uid, last_used_at) VALUES (?, ?)"+
+			" ON CONFLICT(uid) DO UPDATE SET last_used_at = excluded.last_used_at", uid, db.Stamp(at)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func optimizePoints(q db.Querier) error {
@@ -271,6 +424,7 @@ func ForgetPoint(d *sql.DB, id int64) error {
 		}{
 			{"UPDATE episodes SET summary_stale = 1, updated_at = ? WHERE id = ?", []any{at, episode}},
 			{"INSERT OR REPLACE INTO forgotten_points(uid, at) VALUES (?, ?)", []any{uid, at}},
+			{"DELETE FROM point_usage WHERE uid = ?", []any{uid}},
 			{"DELETE FROM points WHERE id = ?", []any{id}},
 			{"INSERT INTO points_fts(points_fts) VALUES ('optimize')", nil},
 		} {
@@ -290,6 +444,10 @@ func ForgetSession(q db.Querier, sessionID string) error {
 	return write(d, func(c *sql.Conn) error {
 		if _, err := c.ExecContext(background, "INSERT OR IGNORE INTO forgotten_sessions(session_id, at) VALUES (?, ?)",
 			sessionID, now()); err != nil {
+			return err
+		}
+		if _, err := c.ExecContext(background, "DELETE FROM point_usage WHERE uid IN (SELECT p.uid FROM points p"+
+			" JOIN episodes e ON e.id = p.episode_id WHERE e.session_id = ?)", sessionID); err != nil {
 			return err
 		}
 		for _, table := range [][2]string{{"messages", "session_id"}, {"sessions", "id"},

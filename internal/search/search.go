@@ -4,6 +4,7 @@ package search
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"unicode"
 
 	"github.com/jplot/brain/internal/db"
+	"github.com/jplot/brain/internal/subjects"
 )
 
 const (
@@ -35,6 +37,19 @@ func (e *ErrAmbiguousSession) Error() string {
 	return fmt.Sprintf("début d'identifiant ambigu : %s (%s)", e.Ref, strings.Join(e.IDs, ", "))
 }
 
+type ErrAmbiguousSubject struct {
+	Term       string
+	Candidates []subjects.Subject
+}
+
+func (e *ErrAmbiguousSubject) Error() string {
+	names := make([]string, len(e.Candidates))
+	for i, c := range e.Candidates {
+		names[i] = c.Name + " " + c.UID
+	}
+	return fmt.Sprintf("plusieurs sujets portent ce nom : %s (%s)", e.Term, strings.Join(names, ", "))
+}
+
 type Segment struct {
 	Text  string
 	Match bool
@@ -43,17 +58,20 @@ type Segment struct {
 type Hit struct {
 	TS, SessionID, Role string
 	Segments            []Segment
+	Subjects            []string
 }
 
-// Since and Until are calendar days in their own location, both included.
+// Subject is a name, keyword or uid; Since and Until are calendar days in their own location, both included.
 type Filter struct {
+	Subject      string
 	Since, Until *time.Time
 	Limit        int
 }
 
 type ListFilter struct {
-	Before string
-	Limit  int
+	Subject string
+	Before  string
+	Limit   int
 }
 
 type SessionRow struct {
@@ -61,6 +79,7 @@ type SessionRow struct {
 	Title              *string
 	StartedAt, EndedAt string
 	Messages           int
+	Subjects           []string
 }
 
 type Message struct {
@@ -69,17 +88,63 @@ type Message struct {
 	GitBranch                 *string
 }
 
+// Terms splits like Python's str.split, which also breaks on the four ASCII separators \x1c-\x1f.
+func Terms(text string) []string {
+	return strings.FieldsFunc(text, func(r rune) bool { return unicode.IsSpace(r) || (r >= 0x1c && r <= 0x1f) })
+}
+
+func quote(term string) string {
+	return `"` + strings.ReplaceAll(strings.ReplaceAll(term, `"`, `""`), "\x00", "�") + `"`
+}
+
 func ToFTSQuery(text string) (string, error) {
-	// Python's str.split also breaks on the four ASCII separators \x1c-\x1f.
-	tokens := strings.FieldsFunc(text, func(r rune) bool { return unicode.IsSpace(r) || (r >= 0x1c && r <= 0x1f) })
+	tokens := Terms(text)
 	if len(tokens) == 0 {
 		return "", ErrEmptyQuery
 	}
 	for i, t := range tokens {
-		t = strings.ReplaceAll(t, `"`, `""`)
-		tokens[i] = `"` + strings.ReplaceAll(t, "\x00", "�") + `"`
+		tokens[i] = quote(t)
 	}
 	return strings.Join(tokens, " "), nil
+}
+
+// MatchAny matches a row holding at least one term; ToFTSQuery wants all of them.
+func MatchAny(terms []string) string {
+	quoted := make([]string, len(terms))
+	for i, t := range terms {
+		quoted[i] = quote(t)
+	}
+	return strings.Join(quoted, " OR ")
+}
+
+// SubjectTree resolves a name, keyword or uid to that subject and its descendants.
+// An unknown term gives no uid, so a filter on it matches nothing.
+func SubjectTree(q db.Querier, term string) ([]string, error) {
+	found, err := subjects.FindByTerm(q, term)
+	if err != nil {
+		return nil, err
+	}
+	switch len(found) {
+	case 0:
+		return nil, nil
+	case 1:
+		below, err := subjects.Descendants(q, found[0].UID)
+		return append([]string{found[0].UID}, below...), err
+	}
+	return nil, &ErrAmbiguousSubject{Term: term, Candidates: found}
+}
+
+func about(q db.Querier, term string) (clause string, args []any, err error) {
+	if term == "" {
+		return "", nil, nil
+	}
+	tree, err := SubjectTree(q, term)
+	if err != nil {
+		return "", nil, err
+	}
+	raw, err := json.Marshal(append([]string{}, tree...))
+	return "m.session_id IN (SELECT e.session_id FROM episodes e JOIN episode_subjects es ON es.episode_uid = e.uid" +
+		" WHERE es.subject_uid IN (SELECT value FROM json_each(?)))", []any{string(raw)}, err
 }
 
 func dayStart(t time.Time, plus int) string {
@@ -155,12 +220,19 @@ func Search(q db.Querier, text string, f Filter) ([]Hit, error) {
 		limit = 20
 	}
 	clauses, args := visible(f.Since, f.Until)
+	subject, subjectArgs, err := about(q, f.Subject)
+	if err != nil {
+		return nil, err
+	}
+	if subject != "" {
+		clauses, args = append(clauses, subject), append(args, subjectArgs...)
+	}
 	where := ""
 	for _, c := range clauses {
 		where += " AND " + c
 	}
 	args = append([]any{markOn, markOff, match}, args...)
-	return collect(q, "SELECT m.ts, m.session_id, m.role,"+
+	hits, err := collect(q, "SELECT m.ts, m.session_id, m.role,"+
 		" snippet(messages_fts, 0, ?, ?, '…', 16)"+
 		" FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid"+
 		" WHERE messages_fts MATCH ?"+where+
@@ -172,6 +244,35 @@ func Search(q db.Querier, text string, f Filter) ([]Hit, error) {
 			h.Segments = segments(excerpt)
 			return h, err
 		})
+	if err != nil || len(hits) == 0 {
+		return nil, err
+	}
+	sessions := make([]string, len(hits))
+	for i, h := range hits {
+		sessions[i] = h.SessionID
+	}
+	names, err := sessionSubjects(q, sessions)
+	for i := range hits {
+		hits[i].Subjects = names[hits[i].SessionID]
+	}
+	return hits, err
+}
+
+func sessionSubjects(q db.Querier, sessions []string) (map[string][]string, error) {
+	raw, err := json.Marshal(sessions)
+	if err != nil {
+		return nil, err
+	}
+	type pair struct{ session, name string }
+	pairs, err := collect(q, "SELECT DISTINCT e.session_id, s.name FROM episodes e"+
+		" JOIN episode_subjects es ON es.episode_uid = e.uid JOIN subjects s ON s.uid = es.subject_uid"+
+		" WHERE e.session_id IN (SELECT value FROM json_each(?)) ORDER BY s.name, s.uid", []any{string(raw)},
+		func(r *sql.Rows) (p pair, err error) { return p, r.Scan(&p.session, &p.name) })
+	names := map[string][]string{}
+	for _, p := range pairs {
+		names[p.session] = append(names[p.session], p.name)
+	}
+	return names, err
 }
 
 func sessionRows(q db.Querier, ids []string) (map[string]*SessionRow, error) {
@@ -203,7 +304,11 @@ func sessionRows(q db.Querier, ids []string) (map[string]*SessionRow, error) {
 		}
 		found[g.session] = row
 	}
-	return found, nil
+	names, err := sessionSubjects(q, ids)
+	for id, row := range found {
+		row.Subjects = names[id]
+	}
+	return found, err
 }
 
 func rowsOf(found map[string]*SessionRow) []SessionRow {
@@ -240,19 +345,25 @@ func ListSessions(q db.Querier, f ListFilter) ([]SessionRow, error) {
 		limit = 50
 	}
 	var having []string
-	var havingArgs []any
+	subject, args, err := about(q, f.Subject)
+	if err != nil {
+		return nil, err
+	}
 	if f.Before != "" {
 		having = append(having, "MAX(m.ts) < ?")
-		havingArgs = append(havingArgs, f.Before)
+		args = append(args, f.Before)
 	}
-	base := "SELECT m.session_id, MAX(m.ts)" + from + " GROUP BY m.session_id"
+	where := ""
+	if subject != "" {
+		where = " WHERE " + subject
+	}
+	base := "SELECT m.session_id, MAX(m.ts)" + from + where + " GROUP BY m.session_id"
 	tail := ""
 	if len(having) > 0 {
 		tail = " HAVING " + strings.Join(having, " AND ")
 	}
 	type page struct{ id, last string }
 	scan := func(r *sql.Rows) (p page, err error) { return p, r.Scan(&p.id, &p.last) }
-	args := havingArgs
 	rows, err := collect(q, base+tail+" ORDER BY MAX(m.ts) DESC, m.session_id LIMIT ?", append(slices.Clone(args), limit), scan)
 	if err != nil || len(rows) == 0 {
 		return nil, err

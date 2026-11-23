@@ -356,6 +356,10 @@ func merge(q db.Querier, from, into string) error {
 			[]any{"UPDATE OR IGNORE " + table + " SET subject_uid = ? WHERE subject_uid = ?", into, from},
 			[]any{"DELETE FROM " + table + " WHERE subject_uid = ?", from})
 	}
+	steps = append(steps,
+		[]any{"UPDATE OR IGNORE syntheses SET subject_uid = ?, updated_at = ? WHERE subject_uid = ?", into, at, from},
+		[]any{"UPDATE syntheses SET stale = 1, updated_at = ? WHERE subject_uid = ? AND EXISTS (SELECT 1 FROM syntheses WHERE subject_uid = ?)", at, into, from},
+		[]any{"DELETE FROM syntheses WHERE subject_uid = ?", from})
 	for _, step := range steps {
 		if _, err := q.ExecContext(bg, step[0].(string), step[1:]...); err != nil {
 			return err

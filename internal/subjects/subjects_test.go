@@ -459,6 +459,47 @@ func TestMergeMovesEverythingAndLeavesTrace(t *testing.T) {
 	}
 }
 
+func synthesis(t *testing.T, q db.Querier, subject, text string) {
+	t.Helper()
+	exec(t, q, "INSERT INTO syntheses(subject_uid, uid, text, cited, created_at, updated_at) VALUES (?, ?, ?, '[]', ?, ?)",
+		subject, "syn-"+text, text, old, old)
+}
+
+func TestMergeMovesSynthesis(t *testing.T) {
+	d := openDB(t)
+	f := newMergeFixture(t, d)
+	synthesis(t, d, f.from, "du dépôt")
+	if err := Merge(d, f.from, f.into); err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	var stale int
+	if err := d.QueryRow("SELECT text, stale FROM syntheses WHERE subject_uid = ?", f.into).Scan(&text, &stale); err != nil || text != "du dépôt" || stale != 0 {
+		t.Fatalf("%q %d %v", text, stale, err)
+	}
+	if n := count(t, d, "SELECT count(*) FROM syntheses WHERE subject_uid = ?", f.from); n != 0 {
+		t.Fatalf("synthèse laissée sur le sujet fusionné : %d", n)
+	}
+}
+
+func TestMergeKeepsSurvivorSynthesisAndMarksItStale(t *testing.T) {
+	d := openDB(t)
+	f := newMergeFixture(t, d)
+	synthesis(t, d, f.from, "du dépôt")
+	synthesis(t, d, f.into, "du sujet")
+	if err := Merge(d, f.from, f.into); err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	var stale int
+	if err := d.QueryRow("SELECT text, stale FROM syntheses WHERE subject_uid = ?", f.into).Scan(&text, &stale); err != nil || text != "du sujet" || stale != 1 {
+		t.Fatalf("%q %d %v", text, stale, err)
+	}
+	if n := count(t, d, "SELECT count(*) FROM syntheses"); n != 1 {
+		t.Fatalf("%d synthèses", n)
+	}
+}
+
 func TestMergeIsAtomic(t *testing.T) {
 	d := openDB(t)
 	f := newMergeFixture(t, d)

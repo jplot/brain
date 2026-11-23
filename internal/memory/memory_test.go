@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/paths"
+	"github.com/jplot/brain/internal/search"
+	"github.com/jplot/brain/internal/subjects"
 )
 
 const t0 = "2026-01-01T10:00:00.000Z"
@@ -79,6 +82,8 @@ type pt struct {
 	kind, text string
 	importance int
 	created    string
+	subject    string
+	supersede  string
 }
 
 func (f *fixture) point(episode int64, o pt) int64 {
@@ -90,8 +95,8 @@ func (f *fixture) point(episode int64, o pt) int64 {
 		o.importance = 3
 	}
 	f.n++
-	res, err := f.db.Exec("INSERT INTO points(uid, episode_id, kind, text, importance, source_ts, created_at, updated_at)"+
-		" VALUES (?, ?, ?, ?, ?, ?, ?, ?)", fmt.Sprint("p", f.n), episode, o.kind, o.text, o.importance, o.created, o.created, o.created)
+	res, err := f.db.Exec("INSERT INTO points(uid, episode_id, kind, subject_uid, text, importance, source_ts, created_at, updated_at, superseded_by_uid)"+
+		" VALUES (?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, NULLIF(?, ''))", fmt.Sprint("p", f.n), episode, o.kind, o.subject, o.text, o.importance, o.created, o.created, o.created, o.supersede)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -104,6 +109,15 @@ func cmp(v, def string) string {
 		return def
 	}
 	return v
+}
+
+func (f *fixture) subject(name string, parent *string) string {
+	f.t.Helper()
+	uid, err := subjects.Create(f.db, name, nil, parent)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return uid
 }
 
 func (f *fixture) visible(flt PointFilter) []Point {
@@ -185,30 +199,6 @@ func TestRebuildKeepsMemories(t *testing.T) {
 	if f.count("SELECT count(*) FROM forgotten_sessions") != 1 || f.count("SELECT count(*) FROM summary_failures") != 1 || f.ftsCount("fait") != 1 {
 		t.Fatal("rebuild lost state")
 	}
-}
-
-func TestPointOutsideScopeInvisible(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestFactSameLabelVisible(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestFactOtherLabelInvisible(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestDecisionSameLabelInvisible(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestAccessOpensPoints(t *testing.T) {
-	t.Skip("Task 9")
-}
-
-func TestAccessToProDoesNotOpenSecondPro(t *testing.T) {
-	t.Skip("Task 9")
 }
 
 func TestEpisodesCarryTitleAndSummary(t *testing.T) {
@@ -309,10 +299,6 @@ func TestSinceUntilAreInclusiveDays(t *testing.T) {
 	if _, err := VisiblePoints(f.db, PointFilter{Since: "hier"}); err == nil {
 		t.Fatal("bad date accepted")
 	}
-}
-
-func TestPointWithoutKnownProject(t *testing.T) {
-	t.Skip("Task 9")
 }
 
 func TestForgetPointStalesSummary(t *testing.T) {
@@ -558,5 +544,234 @@ func TestForgetSessionPurgesRepoHints(t *testing.T) {
 		if f.count("SELECT count(*) FROM "+table+" WHERE session_id = 's'") != 0 || f.count("SELECT count(*) FROM "+table+" WHERE session_id = 'o'") != 1 {
 			t.Fatalf("%s not purged for the forgotten session only", table)
 		}
+	}
+}
+
+func at(t *testing.T, hoursAfter float64) time.Time {
+	t.Helper()
+	base, err := time.Parse(db.UTCFormat, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base.Add(time.Duration(hoursAfter * float64(time.Hour)))
+}
+
+func stamp(t *testing.T, hoursAfter float64) *string {
+	s := db.Stamp(at(t, hoursAfter))
+	return &s
+}
+
+func TestScoreCombinesThree(t *testing.T) {
+	now := at(t, 200)
+	points := []Point{
+		{ID: 1, Importance: 1, CreatedAt: t0, LastUsedAt: stamp(t, 200)},
+		{ID: 2, Importance: 5, CreatedAt: db.Stamp(at(t, 100))},
+		{ID: 3, Importance: 3, CreatedAt: t0},
+	}
+	relevance := map[int64]float64{1: 0.5, 2: 1}
+	got := Score(points, relevance, now)
+	want := []struct {
+		id    int64
+		score float64
+	}{
+		{2, 2.6057704364907277},
+		{1, 1.5},
+		{3, 0.8669578217261671},
+	}
+	for i, w := range want {
+		if got[i].ID != w.id || math.Abs(got[i].Score-w.score) > 1e-9 {
+			t.Errorf("rank %d: point %d score %.10f, want point %d score %.10f", i, got[i].ID, got[i].Score, w.id, w.score)
+		}
+	}
+}
+
+func TestRecencyUsesLastUse(t *testing.T) {
+	f := newFixture(t)
+	e := f.defaultEpisode()
+	month := db.Stamp(time.Now().Add(-30 * 24 * time.Hour))
+	old := f.point(e, pt{text: "ancien", created: month})
+	f.point(e, pt{text: "récent", created: db.Stamp(time.Now().Add(-24 * time.Hour))})
+	if err := MarkUsed(f.db, []string{"p3"}, time.Now().Add(-48*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	equal(t, texts(f.visible(PointFilter{Order: "score"})), []string{"récent", "ancien"})
+	if err := MarkUsed(f.db, []string{"p2"}, time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	got := f.visible(PointFilter{Order: "score"})
+	equal(t, texts(got), []string{"ancien", "récent"})
+	if got[0].ID != old || got[0].LastUsedAt == nil {
+		t.Fatalf("%+v", got[0])
+	}
+}
+
+func TestRelevanceNormalized(t *testing.T) {
+	f := newFixture(t)
+	e := f.defaultEpisode()
+	one := f.point(e, pt{text: "pomme pomme pomme"})
+	two := f.point(e, pt{text: "pomme et poire dans un long texte sans rapport avec le reste"})
+	none := f.point(e, pt{text: "citron"})
+	ids := []int64{one, two, none}
+	got, err := Relevance(f.db, []string{"pomme"}, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw1, raw2 float64
+	f.db.QueryRow("SELECT -bm25(points_fts) FROM points_fts WHERE points_fts MATCH 'pomme' AND rowid = ?", one).Scan(&raw1)
+	f.db.QueryRow("SELECT -bm25(points_fts) FROM points_fts WHERE points_fts MATCH 'pomme' AND rowid = ?", two).Scan(&raw2)
+	if raw1 <= raw2 || raw2 <= 0 {
+		t.Fatalf("raw bm25 %v %v", raw1, raw2)
+	}
+	want := map[int64]float64{one: 1, two: raw2 / raw1, none: 0}
+	for id, w := range want {
+		if math.Abs(got[id]-w) > 1e-9 {
+			t.Errorf("point %d: %v, want %v", id, got[id], w)
+		}
+	}
+	for _, c := range []struct {
+		terms []string
+		ids   []int64
+		want  map[int64]float64
+	}{
+		{nil, ids, map[int64]float64{one: 0, two: 0, none: 0}},
+		{[]string{"pomme"}, []int64{none}, map[int64]float64{none: 0}},
+		{[]string{"pomme"}, []int64{one}, map[int64]float64{one: 1}},
+		{[]string{"pomme", "citron"}, []int64{two, none}, map[int64]float64{}},
+	} {
+		got, err := Relevance(f.db, c.terms, c.ids)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for id, w := range c.want {
+			if got[id] != w {
+				t.Errorf("%v %v: point %d is %v, want %v", c.terms, c.ids, id, got[id], w)
+			}
+		}
+		if len(got) != len(c.ids) {
+			t.Errorf("%v: %d entries for %d candidates", c.terms, len(got), len(c.ids))
+		}
+	}
+}
+
+func TestScoreOrderUsesTermsOfText(t *testing.T) {
+	f := newFixture(t)
+	e := f.defaultEpisode()
+	f.point(e, pt{text: "pomme poire", importance: 3})
+	f.point(e, pt{text: "poire", importance: 3})
+	equal(t, texts(f.visible(PointFilter{Order: "score", Text: "pomme"})), []string{"pomme poire"})
+	f.point(e, pt{text: "citron", importance: 5})
+	equal(t, texts(f.visible(PointFilter{Order: "score", Limit: 1})), []string{"citron"})
+}
+
+func TestMarkUsedLocalOnly(t *testing.T) {
+	f := newFixture(t)
+	f.point(f.defaultEpisode(), pt{})
+	if err := MarkUsed(f.db, []string{"p2", "p2"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count("SELECT count(*) FROM point_usage"); n != 1 {
+		t.Fatalf("usage rows: %d", n)
+	}
+	if err := db.RebuildIndex(f.db); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count("SELECT count(*) FROM point_usage"); n != 0 {
+		t.Fatalf("usage survives rebuild: %d", n)
+	}
+	if n := len(f.visible(PointFilter{})); n != 1 {
+		t.Fatalf("points: %d", n)
+	}
+}
+
+func TestForgetDropsUsage(t *testing.T) {
+	f := newFixture(t)
+	e := f.defaultEpisode()
+	id := f.point(e, pt{})
+	f.point(e, pt{})
+	if err := MarkUsed(f.db, []string{"p2", "p3"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := ForgetPoint(f.db, id); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count("SELECT count(*) FROM point_usage"); n != 1 {
+		t.Fatalf("after forgetting a point: %d", n)
+	}
+	if err := ForgetSession(f.db, "s1"); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count("SELECT count(*) FROM point_usage"); n != 0 {
+		t.Fatalf("after forgetting the session: %d", n)
+	}
+}
+
+func TestSupersededHiddenUnlessHistory(t *testing.T) {
+	f := newFixture(t)
+	e := f.defaultEpisode()
+	f.point(e, pt{text: "ancien", supersede: "p2"})
+	f.point(e, pt{text: "nouveau"})
+	equal(t, texts(f.visible(PointFilter{})), []string{"nouveau"})
+	equal(t, sorted(texts(f.visible(PointFilter{History: true}))), []string{"ancien", "nouveau"})
+}
+
+func TestPointsBySubject(t *testing.T) {
+	f := newFixture(t)
+	e := f.defaultEpisode()
+	maison := f.subject("Maison", nil)
+	reseau := f.subject("Réseau", &maison)
+	outil := f.subject("Outil", nil)
+	f.point(e, pt{text: "toit", subject: maison})
+	f.point(e, pt{text: "routeur", subject: reseau})
+	f.point(e, pt{text: "marteau", subject: outil})
+	equal(t, sorted(texts(f.visible(PointFilter{Subject: "maison"}))), []string{"routeur", "toit"})
+	equal(t, texts(f.visible(PointFilter{Subject: "RESEAU"})), []string{"routeur"})
+	equal(t, texts(f.visible(PointFilter{Subject: outil})), []string{"marteau"})
+	equal(t, texts(f.visible(PointFilter{Subject: "inconnu"})), []string{})
+	got := f.visible(PointFilter{Subject: "outil"})[0]
+	if got.SubjectName == nil || *got.SubjectName != "Outil" || got.SubjectUID == nil || *got.SubjectUID != outil {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestPointsAmbiguousSubject(t *testing.T) {
+	f := newFixture(t)
+	f.subject("Lune", nil)
+	if _, err := subjects.Create(f.db, "Satellite", []string{"lune"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, err := VisiblePoints(f.db, PointFilter{Subject: "lune"})
+	var amb *search.ErrAmbiguousSubject
+	if !errors.As(err, &amb) || len(amb.Candidates) != 2 {
+		t.Fatalf("err %v", err)
+	}
+}
+
+func TestPointWithoutSubjectListed(t *testing.T) {
+	f := newFixture(t)
+	e := f.defaultEpisode()
+	outil := f.subject("Outil", nil)
+	f.point(e, pt{text: "orphelin"})
+	f.point(e, pt{text: "rangé", subject: outil})
+	equal(t, sorted(texts(f.visible(PointFilter{}))), []string{"orphelin", "rangé"})
+	equal(t, texts(f.visible(PointFilter{Subject: "outil"})), []string{"rangé"})
+	if got := f.visible(PointFilter{Text: "orphelin"})[0]; got.SubjectUID != nil || got.SubjectName != nil {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestEpisodesCarrySubjectNames(t *testing.T) {
+	f := newFixture(t)
+	f.defaultEpisode()
+	f.episode("s2", t0, "autre", "")
+	f.exec("INSERT INTO episode_subjects(episode_uid, subject_uid) VALUES ('e1', ?), ('e1', ?)",
+		f.subject("Zèbre", nil), f.subject("Abeille", nil))
+	got, err := VisibleEpisodes(f.db, "s1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	equal(t, got[0].Subjects, []string{"Abeille", "Zèbre"})
+	other, _ := VisibleEpisodes(f.db, "s2")
+	if len(other[0].Subjects) != 0 {
+		t.Fatalf("%v", other[0].Subjects)
 	}
 }

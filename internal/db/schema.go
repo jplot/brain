@@ -43,6 +43,10 @@ CREATE TRIGGER IF NOT EXISTS points_au AFTER UPDATE OF text ON points BEGIN
     INSERT INTO points_fts(points_fts, rowid, text) VALUES ('delete', old.id, old.text);
     INSERT INTO points_fts(rowid, text) VALUES (new.id, new.text);
 END;
+CREATE TABLE IF NOT EXISTS syntheses(
+    subject_uid TEXT PRIMARY KEY, uid TEXT NOT NULL UNIQUE, text TEXT NOT NULL,
+    cited TEXT NOT NULL DEFAULT '[]', stale INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS forgotten_sessions(session_id TEXT PRIMARY KEY, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS forgotten_points(uid TEXT PRIMARY KEY, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS summary_failures(
@@ -77,8 +81,9 @@ CREATE TABLE IF NOT EXISTS repo_cache(
 CREATE TABLE IF NOT EXISTS pending_paths(
     session_id TEXT NOT NULL, path TEXT NOT NULL, attempts INTEGER NOT NULL, last_at TEXT NOT NULL,
     PRIMARY KEY(session_id, path));
+CREATE TABLE IF NOT EXISTS point_usage(uid TEXT PRIMARY KEY, last_used_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS injected(
     session_id TEXT NOT NULL, subject_uid TEXT NOT NULL, PRIMARY KEY(session_id, subject_uid));
 `
 
-var indexTables = []string{"pending_paths", "injected", "repo_cache", "session_repos", "messages_fts", "messages", "sessions", "agent_uses", "files"}
+var indexTables = []string{"point_usage", "pending_paths", "injected", "repo_cache", "session_repos", "messages_fts", "messages", "sessions", "agent_uses", "files"}
