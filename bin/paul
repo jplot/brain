@@ -25,15 +25,15 @@ say() {
 acquire() {
   tries=0
   while ! mkdir "$lock" 2>/dev/null; do
-    [ "$mode" = hook ] && return 1
-    [ -x "$bin" ] && return 1
     tries=$((tries + 1))
-    [ "$tries" -gt 600 ] && return 1
+    [ "$tries" -gt 600 ] && return 2
     if [ -n "$(find "$lock" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then
       rmdir "$lock" 2>/dev/null
-    else
-      sleep 0.2
+      continue
     fi
+    [ "$mode" = hook ] && return 1
+    [ -x "$bin" ] && return 1
+    sleep 0.2
   done
 }
 
@@ -61,7 +61,12 @@ install() {
   url=https://github.com/jplot/brain/releases/download/v$version
   (umask 077; mkdir -p "$home/bin") || return 1
 
-  acquire || return 0
+  acquire
+  case $? in
+    0) ;;
+    2) log "verrou d'installation toujours pris, abandon"; return 1 ;;
+    *) return 0 ;;
+  esac
   trap 'rmdir "$lock" 2>/dev/null; exit 1' HUP INT TERM
   fetch
   status=$?
@@ -70,12 +75,16 @@ install() {
   return $status
 }
 
+download() {
+  curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 10 --max-time 300 -o "$1" "$2"
+}
+
 fetch() {
   [ -x "$bin" ] && return 0
-  part=$home/bin/.paul-$version.part
-  sums=$home/bin/.paul-$version.sums
+  part=$home/bin/.paul-$version.part.$$
+  sums=$home/bin/.paul-$version.sums.$$
   say "téléchargement de $name $version"
-  if ! curl -fsSL -o "$part" "$url/$name" || ! curl -fsSL -o "$sums" "$url/checksums.txt"; then
+  if ! download "$part" "$url/$name" || ! download "$sums" "$url/checksums.txt"; then
     rm -f "$part" "$sums"
     log "échec du téléchargement de $name $version"
     return 1

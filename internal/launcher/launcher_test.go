@@ -343,3 +343,47 @@ func TestFreshLockInHookModeDoesNothing(t *testing.T) {
 		t.Fatalf("curl called %d times under a fresh lock", c)
 	}
 }
+
+func TestStaleLockInHookModeIsTakenOver(t *testing.T) {
+	e := newEnv(t)
+	lock := filepath.Join(e.home, "install.lock")
+	if err := os.MkdirAll(lock, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(lock, old, old); err != nil {
+		t.Fatal(err)
+	}
+	r := e.run("hook", "start")
+	if r.code != 0 || r.stdout != "" || r.stderr != "" {
+		t.Fatalf("got %+v", r)
+	}
+	e.waitInstalled()
+}
+
+func TestChecksumsWithoutTheLineOrWithDuplicatesAreRejected(t *testing.T) {
+	good := strings.Repeat("0", 64)
+	cases := map[string]func(e *env){
+		"missing line": func(e *env) {
+			e.write("serve/checksums.txt", good+"  paul-darwin-arm64\n", 0o644)
+		},
+		"duplicate lines": func(e *env) {
+			sum := sha256.Sum256([]byte(fakePaul))
+			e.write("serve/checksums.txt",
+				hex.EncodeToString(sum[:])+"  "+artifact+"\n"+good+"  "+artifact+"\n", 0o644)
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			e := newEnv(t)
+			setup(e)
+			if r := e.run("search", "mot"); r.code != 1 {
+				t.Fatalf("exit %d: %+v", r.code, r)
+			}
+			if !strings.Contains(e.readLog(), "empreinte") {
+				t.Fatalf("paul.log: %q", e.readLog())
+			}
+			e.assertNothingInstalled()
+		})
+	}
+}

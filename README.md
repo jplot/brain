@@ -6,28 +6,16 @@ Tout reste sur la machine, dans `~/.claude/paul/`. Les secrets repérés dans le
 
 ## Installation
 
-Dans Claude Code :
+Dans un terminal (ou, dans Claude Code, avec `/plugin marketplace add` et `/plugin install`) :
 
 ```
 claude plugin marketplace add jplot/brain
 claude plugin install paul@jplot
 ```
 
-Au premier démarrage de session, le plugin télécharge le binaire correspondant à la plateforme (macOS ou Linux, arm64 ou amd64), en vérifie l'empreinte, puis installe la commande `paul` dans `~/.local/bin`. Cet emplacement se change avec `PAUL_BIN_DIR`. Dépendances : `claude`, `git`, `curl`, `shasum` ou `sha256sum`.
+Au premier démarrage de session, le plugin télécharge en arrière-plan le binaire correspondant à la plateforme (macOS ou Linux, arm64 ou amd64) et en vérifie l'empreinte : cette première session tourne sans mémoire. La commande `paul` apparaît dans `~/.local/bin` au démarrage de la session suivante. Cet emplacement se change avec `PAUL_BIN_DIR`. Dépendances : `claude`, `git`, `curl`, `shasum` ou `sha256sum`.
 
 Aucun réglage n'est nécessaire. Variables facultatives : `PAUL_HOME` (défaut `~/.claude/paul/`) et `PAUL_TRANSCRIPTS` (défaut `~/.claude/projects/`).
-
-## Synchronisation facultative
-
-Pour retrouver ses souvenirs sur plusieurs machines, créer `~/.claude/paul/config.toml` :
-
-```toml
-[sync]
-repository = "git@github.com:mon-compte/mes-souvenirs.git"
-encryption = "age"   # facultatif
-```
-
-Sans cette section, rien n'est synchronisé.
 
 ## Commandes
 
@@ -44,7 +32,6 @@ paul index
 paul rebuild
 paul web                        --no-open
 paul migrate                    --from --root
-paul sync                       --new-key
 ```
 
 - `--kind` prend `topic`, `decision`, `pending` ou `fact`.
