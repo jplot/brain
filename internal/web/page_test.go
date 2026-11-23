@@ -43,8 +43,11 @@ func browser(t *testing.T) context.Context {
 			chrome.err = err
 			return
 		}
-		alloc, stopAlloc := chromedp.NewExecAllocator(context.Background(),
-			append(chromedp.DefaultExecAllocatorOptions[:], chromedp.UserDataDir(dir))...)
+		options := append(chromedp.DefaultExecAllocatorOptions[:], chromedp.UserDataDir(dir))
+		if os.Getenv("CI") != "" {
+			options = append(options, chromedp.NoSandbox)
+		}
+		alloc, stopAlloc := chromedp.NewExecAllocator(context.Background(), options...)
 		ctx, stopBrowser := chromedp.NewContext(alloc)
 		chrome.ctx, chrome.err = ctx, chromedp.Do(ctx)
 		chrome.cancel = func() {

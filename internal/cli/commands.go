@@ -561,5 +561,5 @@ func webCmd(e *env, args []string) (int, error) {
 	if _, err := parseArgs(fs, args); err != nil {
 		return 0, err
 	}
-	return 0, web.Serve(e.p, !*noOpen)
+	return 0, web.Serve(e.p, !*noOpen, e.out)
 }

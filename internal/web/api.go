@@ -434,7 +434,7 @@ func counts(s *server, _ *request) (any, error) {
 func memoText(s *server, r *request) (any, error) {
 	term, given := r.param("subject")
 	if !given {
-		text, err := memo.Start(s.conn, s.cwd, "", time.Now())
+		text, err := memo.Preview(s.conn, s.cwd, time.Now())
 		return map[string]string{"text": text}, err
 	}
 	found, err := subjects.FindByTerm(s.conn, term)

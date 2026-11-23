@@ -67,12 +67,12 @@ func (r *reply) Error() string { return r.message }
 
 func fail(status int, message string) error { return &reply{status, message} }
 
-// The address carries the token: it goes to the terminal, never to paul.log.
-func Serve(p paths.Paths, open bool) error {
+// The address carries the token: it goes to out, never to paul.log.
+func Serve(p paths.Paths, open bool, out io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	cwd, _ := os.Getwd()
-	return serve(ctx, p, cwd, open, os.Stdout, browse)
+	return serve(ctx, p, cwd, open, out, browse)
 }
 
 func serve(ctx context.Context, p paths.Paths, cwd string, open bool, out io.Writer, browser func(string) error) error {

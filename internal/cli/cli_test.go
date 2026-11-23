@@ -7,10 +7,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -537,8 +541,47 @@ func TestNotYetAvailableCommands(t *testing.T) {
 	}
 }
 
-func TestWebIsWired(t *testing.T) {
-	contains(t, newFixture(t).fails(2, "web", "--port", "1"), "web : option inconnue : -port")
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func TestWebPrintsItsAddressAndStopsOnInterrupt(t *testing.T) {
+	f := newFixture(t)
+	contains(t, f.fails(2, "web", "--port", "1"), "web : option inconnue : -port")
+	var out, errOut lockedBuffer
+	done := make(chan int)
+	go func() { done <- Main([]string{"web", "--no-open"}, &out, &errOut) }()
+	var address string
+	for deadline := time.Now().Add(5 * time.Second); address == "" && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		address = strings.TrimSpace(out.String())
+	}
+	if !regexp.MustCompile(`^http://127\.0\.0\.1:[0-9]+/\?token=[A-Za-z0-9_-]{43}$`).MatchString(address) {
+		t.Fatalf("%q", address)
+	}
+	res, err := http.Get(address)
+	if err != nil || res.StatusCode != 200 {
+		t.Fatal(res, err)
+	}
+	res.Body.Close()
+	if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	if code := <-done; code != 0 || errOut.String() != "" {
+		t.Fatalf("code %d, %q", code, errOut.String())
+	}
 }
 
 func TestNoCommandPrintsUsage(t *testing.T) {

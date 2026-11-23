@@ -1107,7 +1107,7 @@ func TestStaleOrUntitledEpisodeNeverSent(t *testing.T) {
 	f.episode(episodeRow{session: "sess-A", title: "TITRE-PERIME", summary: "RESUME-PERIME", stale: true,
 		start: "2026-10-20T11:00:00.000Z", subjects: []string{w.a}})
 	f.episode(episodeRow{session: "sess-B", summary: "Résumé orphelin"})
-	for _, path := range []string{"/api/sessions", "/api/sessions/sess-A", "/api/sessions/sess-B", "/api/points"} {
+	for _, path := range []string{"/api/sessions", "/api/sessions/sess-A", "/api/sessions/sess-B", "/api/points", "/api/memo?subject=" + w.a} {
 		body := string(f.get(path).body)
 		if strings.Contains(body, "PERIME") || strings.Contains(body, "orphelin") {
 			t.Fatal(path, body)
@@ -1203,6 +1203,24 @@ func TestMemo(t *testing.T) {
 	f.get("/api/memo").json(t, &got)
 	if !strings.Contains(got.Text, "Sujet « widget »") || !strings.Contains(got.Text, "Utiliser sqlite") {
 		t.Fatal(got.Text)
+	}
+}
+
+func TestViewingTheMemoMarksNothingUsed(t *testing.T) {
+	f := newFixture(t)
+	w := f.memories()
+	repo, err := subjects.EnsureRepo(f.conn, "example/widget", "widget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.point(w.ea, repo, "decision", "Utiliser sqlite", 3)
+	f.exec("INSERT INTO repo_cache VALUES (?, ?, 't')", f.s.cwd, repo)
+	if !strings.Contains(string(f.get("/api/memo").body), "Utiliser sqlite") {
+		t.Fatal()
+	}
+	f.status(t, f.get("/api/memo?subject="+w.a), 200)
+	if n := f.count("SELECT (SELECT count(*) FROM point_usage) + (SELECT count(*) FROM injected)"); n != 0 {
+		t.Fatal(n)
 	}
 }
 
