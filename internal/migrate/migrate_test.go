@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -416,6 +417,58 @@ func TestMigrateRelativeRoot(t *testing.T) {
 		t.Fatal(out.String())
 	}
 	equal(t, column(t, f.open(), "SELECT count(*) FROM points WHERE subject_uid IS NULL"), []string{"1"})
+}
+
+const childEnv = "PAUL_MIGRATE_CHILD"
+
+// TestInterruptedChild is the child body: it only runs when re-executed.
+func TestInterruptedChild(t *testing.T) {
+	if os.Getenv(childEnv) == "" {
+		t.Skip("child process only")
+	}
+	p := paths.Paths{Home: os.Getenv("PAUL_HOME"), Transcripts: os.Getenv("PAUL_TRANSCRIPTS")}
+	fmt.Println(Run(os.Getenv("OLD"), os.Getenv("ROOT"), p, io.Discard))
+}
+
+func TestMigrateInterruptedRemovesStaging(t *testing.T) {
+	f := newFixture(t)
+	f.build(f.sample()...).Close()
+	bin, started := t.TempDir(), filepath.Join(t.TempDir(), "git-started")
+	os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\n: > '"+started+"'\nexec /bin/sleep 30\n"), 0o755)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestInterruptedChild$", "-test.v")
+	cmd.Env = append(os.Environ(), childEnv+"=1", "PATH="+bin, "OLD="+f.old, "ROOT="+f.root,
+		"PAUL_HOME="+f.p.Home, "PAUL_TRANSCRIPTS="+f.p.Transcripts)
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cmd.Process.Kill()
+			t.Fatalf("git never started\n%s", out.String())
+		}
+	}
+	if staging, _ := filepath.Glob(filepath.Join(f.p.Home, "migrate-*", "brain.db")); len(staging) != 1 {
+		t.Fatalf("no staging copy while blocked: %v", staging)
+	}
+	cmd.Process.Signal(os.Interrupt)
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	// Under git's own 5 s timeout: the interrupt must kill git, not wait for it.
+	case <-time.After(3 * time.Second):
+		cmd.Process.Kill()
+		t.Fatalf("child still running\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "interrompue avant la fin : rien n'est écrit, la copie de travail est effacée") {
+		t.Fatalf("output:\n%s", out.String())
+	}
+	equal(t, tree(t, f.p.Home), nil)
 }
 
 func TestMigrateLosesToConcurrentDatabase(t *testing.T) {

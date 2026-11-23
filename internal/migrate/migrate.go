@@ -12,8 +12,10 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jplot/brain/internal/db"
@@ -28,8 +30,8 @@ var rebuild = index.Rebuild
 var ErrAlreadyDone = errors.New("paul.db existe déjà : la reprise a déjà eu lieu")
 
 var (
-	ctx   = context.Background()
-	kinds = map[string]string{"sujet": "topic", "decision": "decision", "suspens": "pending", "fait": "fact"}
+	errInterrupted = errors.New("interrompue avant la fin : rien n'est écrit, la copie de travail est effacée")
+	kinds          = map[string]string{"sujet": "topic", "decision": "decision", "suspens": "pending", "fait": "fact"}
 )
 
 type counts struct {
@@ -40,8 +42,17 @@ type counts struct {
 
 // The new base is built in a staging folder and linked in place once complete: an import that
 // fails before leaves no paul.db and can run again; after, only the index may be missing.
-func Run(old, root string, p paths.Paths, out io.Writer) error {
-	// The staging folder holds a plain copy of the old memory, and Ctrl-C skips the deferred removal.
+func Run(old, root string, p paths.Paths, out io.Writer) (err error) {
+	// The staging folder holds a plain copy of the old memory: an interrupted run removes it
+	// itself, and a killed one leaves it to the next run.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	committed := false
+	defer func() {
+		if err != nil && ctx.Err() != nil && !committed {
+			err = errInterrupted
+		}
+	}()
 	leftovers, err := filepath.Glob(filepath.Join(p.Home, "migrate-*"))
 	if err != nil {
 		return err
@@ -89,7 +100,7 @@ func Run(old, root string, p paths.Paths, out io.Writer) error {
 		kept[real.path(vocalPath)] = true
 	}
 	read := func(file string) bool { return kept[real.path(file)] }
-	c, err := importBase(copied, root, staged, read)
+	c, err := importBase(ctx, copied, root, staged, read)
 	if err != nil {
 		return err
 	}
@@ -107,9 +118,15 @@ func Run(old, root string, p paths.Paths, out io.Writer) error {
 	if c.archived > 0 {
 		journals = append(journals, filepath.Base(p.Archive()))
 	}
+	if ctx.Err() != nil {
+		return errInterrupted
+	}
 	if err := commit(staged, p, journals); err != nil {
 		return err
 	}
+	// From here the import is done: Ctrl-C during the index rebuild stops paul as usual.
+	committed = true
+	stop()
 	if err := os.RemoveAll(stage); err != nil {
 		return fmt.Errorf("reprise faite, mais la copie de l'ancienne base reste dans %s : %w", stage, err)
 	}
@@ -221,7 +238,7 @@ func copyFile(from, to string) error {
 	return errors.Join(err, out.Close())
 }
 
-func importBase(old, root string, staged paths.Paths, read func(file string) bool) (counts, error) {
+func importBase(ctx context.Context, old, root string, staged paths.Paths, read func(file string) bool) (counts, error) {
 	var c counts
 	src, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: old, RawQuery: "mode=ro"}).String())
 	if err != nil {
@@ -244,7 +261,7 @@ func importBase(old, root string, staged paths.Paths, read func(file string) boo
 		return c, err
 	}
 	defer to.Rollback()
-	m := &mapper{to: to, root: root, uids: map[string]*string{}, c: &c}
+	m := &mapper{ctx: ctx, to: to, root: root, uids: map[string]*string{}, c: &c}
 	steps := []func(*sql.Tx) error{m.projects, m.episodes, m.points, func(from *sql.Tx) (err error) {
 		c.archived, err = archive(from, read, staged.Archive())
 		return err
@@ -295,6 +312,7 @@ func forgottenSessions(q *sql.Tx) (map[string]bool, error) {
 }
 
 type mapper struct {
+	ctx  context.Context
 	to   *sql.Tx
 	root string
 	uids map[string]*string
@@ -321,7 +339,7 @@ func (m *mapper) subject(path string) (*string, error) {
 }
 
 func (m *mapper) resolve(path string) (string, error) {
-	info, ok, err := repo.Of(ctx, path)
+	info, ok, err := repo.Of(m.ctx, path)
 	if errors.Is(err, repo.ErrGit) {
 		return "", fmt.Errorf("git est nécessaire pour reconnaître les dépôts des anciens projets (%s) : %w", path, err)
 	}
