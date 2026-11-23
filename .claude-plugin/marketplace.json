@@ -3,12 +3,12 @@
   "owner": {
     "name": "jplot"
   },
-  "description": "Plugins de jplot pour Claude Code.",
+  "description": "jplot plugins for Claude Code.",
   "plugins": [
     {
       "name": "paul",
       "source": "./",
-      "description": "Mémoire persistante pour Claude Code."
+      "description": "Persistent memory for Claude Code."
     }
   ]
 }

@@ -1,34 +1,34 @@
 # paul
 
-Mémoire persistante pour Claude Code. paul indexe les conversations, en tire des souvenirs (sujets, décisions, suspens, faits) rattachés à des sujets, et les rapporte à Claude quand on en parle : au démarrage d'une session, puis à chaque message qui touche un sujet connu.
+Persistent memory for Claude Code. paul indexes conversations, distills them into memories (topics, decisions, pending items, facts) attached to subjects, and reports them to Claude when they come up: at session start, then on every message that touches a known subject.
 
-La mémoire reste sur la machine, dans `~/.claude/paul/`, mais le texte des conversations, secrets masqués, est envoyé au modèle pour être résumé (voir « Résumés »). Les secrets repérés dans les messages sont masqués avant l'indexation.
+The memory stays on the machine, in `~/.claude/paul/`, but the text of conversations, with secrets masked, is sent to the model to be summarized (see "Summaries"). Secrets found in messages are masked before indexing.
 
 ## Installation
 
-Dans un terminal (ou, dans Claude Code, avec `/plugin marketplace add` et `/plugin install`) :
+In a terminal (or, in Claude Code, with `/plugin marketplace add` and `/plugin install`):
 
 ```
 claude plugin marketplace add jplot/brain
 claude plugin install paul@jplot
 ```
 
-Au premier démarrage de session, le plugin télécharge en arrière-plan le binaire correspondant à la plateforme (macOS ou Linux, arm64 ou amd64) et en vérifie l'empreinte : cette première session tourne sans mémoire. La commande `paul` apparaît dans `~/.local/bin` au démarrage de la session suivante ; ce dossier doit figurer dans le `PATH`. Cet emplacement se change avec `PAUL_BIN_DIR`. Dépendances : `claude`, `git`, `curl`, `shasum` ou `sha256sum`.
+On the first session start, the plugin downloads the binary for the platform in the background (macOS or Linux, arm64 or amd64) and verifies its checksum: that first session runs without memory. The `paul` command appears in `~/.local/bin` when the next session starts; that folder must be in the `PATH`. Change this location with `PAUL_BIN_DIR`. Dependencies: `claude`, `git`, `curl`, `shasum` or `sha256sum`.
 
-Aucun réglage n'est nécessaire. Variables facultatives : `PAUL_HOME` (défaut `~/.claude/paul/`) et `PAUL_TRANSCRIPTS` (défaut `~/.claude/projects/`).
+No setup is needed. Optional variables: `PAUL_HOME` (default `~/.claude/paul/`) and `PAUL_TRANSCRIPTS` (default `~/.claude/projects/`).
 
-## Résumés
+## Summaries
 
-Dès la deuxième session, chaque session est résumée en arrière-plan par `claude -p` avec Haiku, et les synthèses des sujets sont écrites avec Sonnet. Le modèle reçoit le texte masqué des conversations et les souvenirs qui en sont tirés. Un résumé coûte environ 0,003 $ par session (mesuré). Une synthèse coûte davantage, le modèle étant Sonnet, et chaque passage en écrit au plus 10.
+From the second session on, each session is summarized in the background by `claude -p` with Haiku, and subject syntheses are written with Sonnet. The model receives the masked text of the conversations and the memories drawn from them. A summary costs about $0.003 per session (measured). A synthesis costs more, since the model is Sonnet, and each pass writes at most 10.
 
-## Commandes
+## Commands
 
 ```
-paul search <mots>              --subject --since --until --limit
-paul souvenirs [mots]           --kind --subject --open --history --limit
+paul search <words>             --subject --since --until --limit
+paul souvenirs [words]          --kind --subject --open --history --limit
 paul session <id>
-paul day <AAAA-MM-JJ>
-paul subjects [mots]            l'arbre des sujets et leurs liens
+paul day <YYYY-MM-DD>
+paul subjects [words]           the subject tree and its links
 paul memo                       --subject
 paul summarize                  --session --limit --all --force
 paul forget point|session <id>  --yes
@@ -38,33 +38,33 @@ paul web                        --no-open
 paul migrate                    --from --root
 ```
 
-- `--kind` prend `topic`, `decision`, `pending` ou `fact`.
-- `paul forget` décrit ce qui serait effacé et s'arrête avec le code 2 tant que `--yes` n'est pas donné.
-- `paul web` ouvre une page locale (127.0.0.1) : fil des sessions, recherche, souvenirs avec correction et oubli, arbre des sujets.
-- Le skill `paul:souvenirs` laisse Claude chercher dans les souvenirs dès que l'utilisateur parle du passé.
+- `--kind` takes `topic`, `decision`, `pending` or `fact`.
+- `paul forget` describes what would be erased and stops with exit code 2 until `--yes` is given.
+- `paul web` opens a local page (127.0.0.1): session feed, search, memories with correction and forgetting, subject tree.
+- The `paul:souvenirs` skill lets Claude search the memories whenever the user talks about the past.
 
-## Journaux externes, format v1
+## External journals, format v1
 
-Tout fichier `*.jsonl` déposé dans `~/.claude/paul/journals/` est indexé comme une conversation. Une ligne JSON par message :
+Any `*.jsonl` file placed in `~/.claude/paul/journals/` is indexed as a conversation. One JSON line per message:
 
 ```
 v        1
-id       chaîne unique dans le fichier
-session  identifiant de session
-ts       horodatage ISO 8601 UTC
+id       string, unique within the file
+session  session identifier
+ts       ISO 8601 UTC timestamp
 role     "user" | "claude" | "subagent" | "tool"
-text     le message ; paul le masque à l'indexation
-title    facultatif ; titre de la session
-cwd      facultatif ; indice de dépôt pour le résumeur
+text     the message; paul masks it at indexing
+title    optional; session title
+cwd      optional; repository hint for the summarizer
 ```
 
-## Venir de la version Python
+## Coming from the Python version
 
-À faire sur une seule machine :
+Do this on a single machine:
 
-1. Arrêter ce qui utilise l'ancienne base : les hooks `brain hook` de Claude Code (sessions ouvertes comprises), tout `brain web` en cours et tout processus Python de l'ancienne version. Fermer aussi les sessions Claude Code et tout `paul web` en cours avant de lancer `paul migrate`.
-2. Retirer les hooks `brain hook` de `~/.claude/settings.json` et le skill `~/.claude/skills/souvenirs/`.
-3. Lancer `paul migrate` (options `--from` pour le chemin de l'ancienne base, `--root` pour la racine de ses projets). La commande refuse de s'exécuter si `paul.db` contient déjà des souvenirs ; une base créée par les premiers hooks, encore sans souvenirs, est remplacée. Chaque ancien projet devient un sujet, les points sont rattachés à leur sujet, les étiquettes et les accès sont abandonnés, puis l'index est reconstruit.
-4. Le journal de l'assistant vocal de l'ancienne version est converti au format v1 dans `~/.claude/paul/journals/vocal.jsonl`.
+1. Stop whatever uses the old database: the `brain hook` hooks of Claude Code (open sessions included), any running `brain web` and any Python process of the old version. Also close Claude Code sessions and any running `paul web` before running `paul migrate`.
+2. Remove the `brain hook` hooks from `~/.claude/settings.json` and the `~/.claude/skills/souvenirs/` skill.
+3. Run `paul migrate` (`--from` for the path of the old database, `--root` for the root of its projects). The command refuses to run if `paul.db` already contains memories; a database created by the first hooks, still without memories, is replaced. Each old project becomes a subject, points are attached to their subject, tags and accesses are dropped, then the index is rebuilt.
+4. The old version's voice assistant journal is converted to format v1 in `~/.claude/paul/journals/vocal.jsonl`.
 
-L'ancienne base n'est jamais modifiée : `paul migrate` n'en lit qu'une copie.
+The old database is never modified: `paul migrate` only reads a copy of it.
