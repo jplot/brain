@@ -444,6 +444,11 @@ func ForgetSession(q db.Querier, sessionID string) error {
 		return ErrInTransaction
 	}
 	return write(d, func(c *sql.Conn) error {
+		if _, err := c.ExecContext(background, "UPDATE syntheses SET stale = 1, updated_at = ? WHERE EXISTS"+
+			" (SELECT 1 FROM json_each(cited) j WHERE j.value IN (SELECT p.uid FROM points p"+
+			" JOIN episodes e ON e.id = p.episode_id WHERE e.session_id = ?))", now(), sessionID); err != nil {
+			return err
+		}
 		if _, err := c.ExecContext(background, "INSERT OR IGNORE INTO forgotten_sessions(session_id, at) VALUES (?, ?)",
 			sessionID, now()); err != nil {
 			return err

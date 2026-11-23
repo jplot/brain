@@ -1,8 +1,10 @@
 package summary
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,8 +104,8 @@ func TestSynthesisDueCountsOnlyNewCurrentPoints(t *testing.T) {
 		t.Fatal("superseded points counted", got)
 	}
 	f.exec("UPDATE points SET superseded_by_uid = NULL")
-	f.exec("INSERT INTO syntheses(subject_uid, uid, text, created_at, updated_at) VALUES (?, 'y', 't', ?, ?)",
-		f.home, "2026-01-01T10:30:00.000Z", "2026-01-01T10:30:00.000Z")
+	f.exec("INSERT INTO syntheses(subject_uid, uid, text, created_at, updated_at, written_at) VALUES (?, 'y', 't', ?, ?, ?)",
+		f.home, "2026-01-01T10:30:00.000Z", "2026-01-01T12:00:00.000Z", "2026-01-01T10:30:00.000Z")
 	if got := f.due(); len(got) != 0 {
 		t.Fatal("points older than the synthesis counted", got)
 	}
@@ -152,7 +154,6 @@ func TestSynthesisReplacesPrevious(t *testing.T) {
 		t.Fatalf("%+v", out)
 	}
 	first, _ := f.synthesis(f.home)
-	f.exec("UPDATE syntheses SET stale = 1")
 	later := now0.Add(time.Hour)
 	if out := Synthesize(f.db, camille, f.home, m.run, later); out.Status != Synthesized {
 		t.Fatalf("%+v", out)
@@ -164,6 +165,11 @@ func TestSynthesisReplacesPrevious(t *testing.T) {
 	}
 	if !strings.Contains(m.calls[1].prompt, "Synthèse précédente : Première version") {
 		t.Fatal(m.calls[1].prompt)
+	}
+	f.exec("UPDATE syntheses SET stale = 1")
+	Synthesize(f.db, camille, f.home, newModel(synthesisOf("Troisième", points[0], points[1])).run, later.Add(time.Hour))
+	if third, _ := f.synthesis(f.home); third.stale != 0 || third.text != "Troisième" {
+		t.Fatalf("%+v", third)
 	}
 	uid2 := f.column("SELECT uid FROM points WHERE id = ?", points[1])[0]
 	if !strings.Contains(second.cited, uid2) || f.count("SELECT count(*) FROM summary_failures") != 0 {
@@ -282,7 +288,7 @@ func TestSynthesisInputBoundedAndRanked(t *testing.T) {
 	m := newModel(synthesisOf("ok", top, top))
 	Synthesize(f.db, camille, f.home, m.run, now0)
 	prompt := m.calls[0].prompt
-	if n := strings.Count(prompt, "\n#"); n != MaxSynthesisPoints {
+	if n := strings.Count(prompt, "\n#"); n != 60 {
 		t.Fatal(n)
 	}
 	if !strings.Contains(prompt, fmt.Sprintf("#%d ", top)) || strings.Contains(prompt, fmt.Sprintf("#%d ", gone)) {
@@ -365,5 +371,102 @@ func TestCatchupSynthesizesAfterSummaries(t *testing.T) {
 	outcomes, _, _ := RunCatchup(f.p, Options{All: true})
 	if strings.Join(order, ",") != "summary,synthesis" || len(outcomes) != 2 || outcomes[1].Status != Synthesized {
 		t.Fatal(order, outcomes)
+	}
+}
+
+func TestSynthesisBacklogIgnoresStaleMarkMove(t *testing.T) {
+	f := newFixture(t)
+	f.backlog(f.home, 10)
+	f.exec("INSERT INTO syntheses(subject_uid, uid, text, created_at, updated_at, written_at) VALUES (?, 'y', 't', ?, ?, ?)",
+		f.home, t1, "2026-01-02T00:00:00.000Z", t1)
+	f.backlog(f.home, 15)
+	f.exec("UPDATE points SET created_at = '2026-01-01T11:00:00.000Z' WHERE id > 2")
+	if got := f.due(); len(got) != 1 {
+		t.Fatal("updated_at moved the boundary", got)
+	}
+}
+
+func TestStaleSynthesisNotSentBack(t *testing.T) {
+	f := newFixture(t)
+	child, _ := subjects.Create(f.db, "Sous-sujet", nil, &f.home)
+	points := f.backlog(f.home, 15)
+	f.exec("INSERT INTO syntheses(subject_uid, uid, text, stale, created_at, updated_at) VALUES (?, 'y', 'cite le point oublié', 1, ?, ?)",
+		f.home, longAgo, longAgo)
+	f.exec("INSERT INTO syntheses(subject_uid, uid, text, stale, created_at, updated_at) VALUES (?, 'c', 'enfant périmé', 1, ?, ?)",
+		child, longAgo, longAgo)
+	m := newModel(synthesisOf("Neuve", points[0], points[1]))
+	Synthesize(f.db, camille, f.home, m.run, now0)
+	prompt := m.calls[0].prompt
+	if strings.Contains(prompt, "oublié") || strings.Contains(prompt, "enfant périmé") ||
+		!strings.Contains(prompt, "Synthèse précédente : (aucune)") {
+		t.Fatal(prompt)
+	}
+}
+
+func TestForgottenSessionMarksCitingSynthesesStale(t *testing.T) {
+	f := newFixture(t)
+	points := f.backlog(f.home, 15)
+	other := f.subject("Autre")
+	otherPoints := f.backlog(other, 15)
+	Synthesize(f.db, camille, f.home, newModel(synthesisOf("A", points[0], points[1])).run, now0)
+	f.exec("UPDATE episodes SET session_id = 's9' WHERE id = (SELECT episode_id FROM points WHERE id = ?)", otherPoints[0])
+	f.exec("UPDATE points SET episode_id = (SELECT episode_id FROM points WHERE id = ?) WHERE id = ?", otherPoints[0], points[0])
+	if err := memory.ForgetSession(f.db, "s9"); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := f.synthesis(f.home); r.stale != 1 {
+		t.Fatal("not stale")
+	}
+}
+
+func TestStaleSynthesisWithTooFewPointsDeleted(t *testing.T) {
+	f := newFixture(t)
+	points := f.backlog(f.home, 20)
+	Synthesize(f.db, camille, f.home, newModel(synthesisOf("A", points[0], points[1])).run, now0)
+	for _, id := range points[1:] {
+		if err := memory.ForgetPoint(f.db, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := runSyntheses(f.db, camille, now0); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.synthesis(f.home); ok {
+		t.Fatal("kept")
+	}
+}
+
+func TestSynthesisRetriedAfterCapOnNewPoint(t *testing.T) {
+	f := newFixture(t)
+	f.backlog(f.home, 15)
+	f.exec("INSERT INTO summary_failures(session_id, attempts, last_at) VALUES (?, 3, ?)", "synthesis:"+f.home, "2026-01-01T12:00:00.000Z")
+	if got := f.due(); len(got) != 0 {
+		t.Fatal(got)
+	}
+	f.subjectPoint(f.home, 1, "2026-01-01T13:00:00.000Z")
+	if got := f.due(); len(got) != 1 {
+		t.Fatal(got)
+	}
+}
+
+func TestSynthesisFailureLogNamesSubject(t *testing.T) {
+	f := newFixture(t)
+	f.backlog(f.home, 15)
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	Synthesize(f.db, camille, f.home, newModel(&Error{msg: "x"}).run, now0)
+	if got := buf.String(); !strings.Contains(got, "synthèse échouée : "+f.home) || strings.Contains(got, "résumé échoué") {
+		t.Fatal(got)
+	}
+}
+
+func TestSynthesisReadErrorIsBusy(t *testing.T) {
+	f := newFixture(t)
+	f.backlog(f.home, 15)
+	f.db.Close()
+	m := newModel(&Error{msg: "x"})
+	if out := Synthesize(f.db, camille, f.home, m.run, now0); out.Status != Busy || len(m.calls) != 0 {
+		t.Fatalf("%+v", out)
 	}
 }

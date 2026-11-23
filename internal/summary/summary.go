@@ -390,10 +390,14 @@ func countAttempt(conn *sql.DB, sessionID string, now time.Time) (counted bool, 
 
 func fail(conn *sql.DB, sessionID string, now time.Time, c *calls, err error) Outcome {
 	log.Printf("résumé échoué : %s (%T)", sessionID, err)
-	if _, err := conn.Exec("UPDATE summary_failures SET last_at = ? WHERE session_id = ?", db.Stamp(now), sessionID); err != nil {
-		log.Printf("date d'échec non mise à jour : %s (%T)", sessionID, err)
-	}
+	touchFailure(conn, sessionID, now)
 	return Outcome{Status: Failed, CostUSD: c.cost, SessionID: sessionID}
+}
+
+func touchFailure(conn *sql.DB, key string, now time.Time) {
+	if _, err := conn.Exec("UPDATE summary_failures SET last_at = ? WHERE session_id = ?", db.Stamp(now), key); err != nil {
+		log.Printf("date d'échec non mise à jour : %s (%T)", key, err)
+	}
 }
 
 // A zero now stamps each write with the time it happens.

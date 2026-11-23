@@ -12,6 +12,7 @@ import (
 
 	"github.com/jplot/brain/internal/db"
 	"github.com/jplot/brain/internal/mask"
+	"github.com/jplot/brain/internal/memory"
 )
 
 const (
@@ -46,19 +47,21 @@ func synthesisSystem(user string) string {
 }
 
 // DueSyntheses requires two current points: a synthesis cites at least MinCited, so one point could never succeed.
-// The failure rows live in summary_failures under "synthesis:<subject uid>": a session id is a UUID and cannot collide.
+// Failure rows live in summary_failures under "synthesis:<subject uid>": a session id is a UUID and cannot collide.
+// A subject past MaxFailures waits for a point created after its last failure.
 func DueSyntheses(q db.Querier, now time.Time) ([]string, error) {
 	rows, err := q.QueryContext(ctx, "SELECT p.subject_uid,"+
-		" COALESCE(SUM(CASE WHEN p.created_at > COALESCE(y.updated_at, '') THEN p.importance END), 0) AS backlog"+
+		" COALESCE(SUM(CASE WHEN p.created_at > COALESCE(y.written_at, '') THEN p.importance END), 0) AS backlog"+
 		" FROM points p JOIN subjects s ON s.uid = p.subject_uid"+
 		" LEFT JOIN syntheses y ON y.subject_uid = p.subject_uid"+
 		" LEFT JOIN summary_failures f ON f.session_id = ? || p.subject_uid"+
 		" WHERE p.superseded_by_uid IS NULL"+
 		" GROUP BY p.subject_uid"+
 		" HAVING COUNT(*) >= ? AND (backlog >= ? OR COALESCE(MAX(y.stale), 0) = 1)"+
-		" AND (MAX(f.attempts) IS NULL OR (MAX(f.attempts) < ? AND MAX(f.last_at) < ?))"+
+		" AND (MAX(f.attempts) IS NULL OR (MAX(f.attempts) < ? AND MAX(f.last_at) < ?)"+
+		" OR (MAX(f.attempts) >= ? AND MAX(p.created_at) > MAX(f.last_at)))"+
 		" ORDER BY backlog DESC, p.subject_uid LIMIT ?",
-		failureKey, MinCited, SynthesisThreshold, MaxFailures, db.Stamp(now.Add(-Retry)), MaxSyntheses)
+		failureKey, MinCited, SynthesisThreshold, MaxFailures, db.Stamp(now.Add(-Retry)), MaxFailures, MaxSyntheses)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +81,7 @@ func DueSyntheses(q db.Querier, now time.Time) ([]string, error) {
 type synthesisInput struct {
 	name, previous string
 	points         []shownPoint
-	children       [][2]string
+	children       []memory.ChildSynthesis
 }
 
 func (d synthesisInput) body() string {
@@ -87,7 +90,7 @@ func (d synthesisInput) body() string {
 		points = append(points, fmt.Sprintf("#%d %s : %s", p.id, p.kind, truncate(p.text, MaxPointChars)))
 	}
 	for _, c := range d.children {
-		children = append(children, fmt.Sprintf("%s : %s", truncate(c[0], MaxNameChars), c[1]))
+		children = append(children, fmt.Sprintf("%s : %s", truncate(c.Name, MaxNameChars), c.Text))
 	}
 	previous := d.previous
 	if previous == "" {
@@ -106,31 +109,18 @@ func (d *synthesisInput) fit() {
 
 func gatherSynthesis(q db.Querier, subjectUID string, now time.Time) (synthesisInput, error) {
 	var d synthesisInput
-	var previous sql.NullString
-	err := q.QueryRowContext(ctx, "SELECT s.name, (SELECT text FROM syntheses WHERE subject_uid = s.uid) FROM subjects s"+
-		" WHERE s.uid = ?", subjectUID).Scan(&d.name, &previous)
-	if err != nil {
+	if err := q.QueryRowContext(ctx, "SELECT name FROM subjects WHERE uid = ?", subjectUID).Scan(&d.name); err != nil {
 		return d, err
 	}
-	d.previous = previous.String
+	var err error
+	if d.previous, err = memory.Synthesis(q, subjectUID); err != nil {
+		return d, err
+	}
 	if d.points, err = shownPoints(q, MaxSynthesisPoints, now, "p.subject_uid = ? AND p.superseded_by_uid IS NULL",
 		subjectUID); err != nil {
 		return d, err
 	}
-	rows, err := q.QueryContext(ctx, "SELECT s.name, y.text FROM subjects s JOIN syntheses y ON y.subject_uid = s.uid"+
-		" WHERE s.parent_uid = ? ORDER BY s.name, s.uid LIMIT ?", subjectUID, MaxChildSyntheses)
-	if err != nil {
-		return d, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var c [2]string
-		if err := rows.Scan(&c[0], &c[1]); err != nil {
-			return d, err
-		}
-		d.children = append(d.children, c)
-	}
-	if err := rows.Err(); err != nil {
+	if d.children, err = memory.ChildSyntheses(q, subjectUID, MaxChildSyntheses); err != nil {
 		return d, err
 	}
 	d.fit()
@@ -166,8 +156,8 @@ func readSynthesis(output map[string]any, given []shownPoint) (string, []int64, 
 	return text, cited, nil
 }
 
-// Synthesize replaces the subject's synthesis in place: the row keeps its uid, so sync sees one file per subject
-// change rather than a new one. A zero now stamps the start of the call, so a point created during it still counts.
+// The row keeps its uid when replaced: sync holds one file per subject.
+// A zero now is the start of the call, so a point created during it still counts toward the next synthesis.
 func Synthesize(conn *sql.DB, user, subjectUID string, run Runner, now time.Time) Outcome {
 	if now.IsZero() {
 		now = time.Now()
@@ -175,8 +165,9 @@ func Synthesize(conn *sql.DB, user, subjectUID string, run Runner, now time.Time
 	c := &calls{run: run}
 	out, err := synthesize(conn, user, subjectUID, c, now)
 	if err != nil {
-		out = fail(conn, failureKey+subjectUID, now, c, err)
-		out.SessionID = ""
+		log.Printf("synthèse échouée : %s (%T)", subjectUID, err)
+		touchFailure(conn, failureKey+subjectUID, now)
+		out = Outcome{Status: Failed, CostUSD: c.cost}
 	}
 	out.SubjectUID = subjectUID
 	return out
@@ -184,8 +175,12 @@ func Synthesize(conn *sql.DB, user, subjectUID string, run Runner, now time.Time
 
 func synthesize(conn *sql.DB, user, subjectUID string, c *calls, now time.Time) (Outcome, error) {
 	data, err := gatherSynthesis(conn, subjectUID, now)
-	if err != nil || len(data.points) < MinCited {
-		return Outcome{Status: Already}, err
+	if err != nil {
+		log.Printf("synthèse différée : %s (%T)", subjectUID, err)
+		return Outcome{Status: Busy}, nil
+	}
+	if len(data.points) < MinCited {
+		return Outcome{Status: Already}, nil
 	}
 	counted, err := countAttempt(conn, failureKey+subjectUID, now)
 	if err != nil {
@@ -232,10 +227,10 @@ func storeSynthesis(conn *sql.DB, subjectUID, text string, cited []int64, at str
 		if err != nil {
 			return err
 		}
-		if _, err := c.ExecContext(ctx, "INSERT INTO syntheses(subject_uid, uid, text, cited, stale, created_at, updated_at)"+
-			" VALUES (?, ?, ?, ?, 0, ?, ?) ON CONFLICT(subject_uid) DO UPDATE SET text = excluded.text,"+
-			" cited = excluded.cited, stale = 0, updated_at = excluded.updated_at",
-			subjectUID, db.NewUID(), text, string(raw), at, at); err != nil {
+		if _, err := c.ExecContext(ctx, "INSERT INTO syntheses(subject_uid, uid, text, cited, stale, created_at, updated_at, written_at)"+
+			" VALUES (?, ?, ?, ?, 0, ?, ?, ?) ON CONFLICT(subject_uid) DO UPDATE SET text = excluded.text,"+
+			" cited = excluded.cited, stale = 0, updated_at = excluded.updated_at, written_at = excluded.written_at",
+			subjectUID, db.NewUID(), text, string(raw), at, at, at); err != nil {
 			return err
 		}
 		if _, err := c.ExecContext(ctx, "DELETE FROM summary_failures WHERE session_id = ?", failureKey+subjectUID); err != nil {
@@ -248,6 +243,10 @@ func storeSynthesis(conn *sql.DB, subjectUID, text string, cited []int64, at str
 }
 
 func runSyntheses(conn *sql.DB, user string, now time.Time) ([]Outcome, error) {
+	if _, err := conn.ExecContext(ctx, "DELETE FROM syntheses WHERE stale = 1 AND (SELECT count(*) FROM points p"+
+		" WHERE p.subject_uid = syntheses.subject_uid AND p.superseded_by_uid IS NULL) < ?", MinCited); err != nil {
+		return nil, err
+	}
 	due, err := DueSyntheses(conn, now)
 	if err != nil {
 		return nil, err

@@ -777,3 +777,29 @@ func TestEpisodesCarrySubjectNames(t *testing.T) {
 		t.Fatalf("%v", other[0].Subjects)
 	}
 }
+
+func TestSynthesisReadersSkipStale(t *testing.T) {
+	f := newFixture(t)
+	parent := f.subject("Parent", nil)
+	child := f.subject("Enfant", &parent)
+	for _, s := range []struct {
+		subject string
+		stale   int
+	}{{parent, 0}, {child, 1}} {
+		f.exec("INSERT INTO syntheses(subject_uid, uid, text, stale, created_at, updated_at) VALUES (?, ?, 'texte', ?, 'a', 'a')",
+			s.subject, s.subject, s.stale)
+	}
+	if text, err := Synthesis(f.db, parent); err != nil || text != "texte" {
+		t.Fatal(text, err)
+	}
+	if text, _ := Synthesis(f.db, child); text != "" {
+		t.Fatal("stale read", text)
+	}
+	if got, _ := ChildSyntheses(f.db, parent, 10); len(got) != 0 {
+		t.Fatal(got)
+	}
+	f.exec("UPDATE syntheses SET stale = 0")
+	if got, _ := ChildSyntheses(f.db, parent, 10); len(got) != 1 || got[0].Name != "Enfant" {
+		t.Fatal(got)
+	}
+}

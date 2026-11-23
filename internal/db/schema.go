@@ -47,7 +47,7 @@ END;
 CREATE TABLE IF NOT EXISTS syntheses(
     subject_uid TEXT PRIMARY KEY, uid TEXT NOT NULL UNIQUE, text TEXT NOT NULL,
     cited TEXT NOT NULL DEFAULT '[]', stale INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, written_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS forgotten_sessions(session_id TEXT PRIMARY KEY, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS forgotten_points(uid TEXT PRIMARY KEY, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS summary_failures(
