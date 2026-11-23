@@ -88,6 +88,7 @@ func wrap(inner string) string {
 type candidate struct {
 	uid, kind, name, parent string
 	aliases                 []string
+	session                 bool
 }
 
 type shownPoint struct {
@@ -110,12 +111,16 @@ func section(title string, lines []string) string {
 func (d promptData) header() string {
 	var candidates, open, current []string
 	for _, c := range d.candidates {
-		line := fmt.Sprintf("%s (%s) %s", c.uid, c.kind, c.name)
+		line := fmt.Sprintf("%s (%s) %s", c.uid, c.kind, truncate(c.name, MaxNameChars))
 		if len(c.aliases) > 0 {
-			line += " ; mots-clés : " + strings.Join(c.aliases[:min(len(c.aliases), MaxShownAliases)], ", ")
+			var aliases []string
+			for _, a := range c.aliases[:min(len(c.aliases), MaxShownAliases)] {
+				aliases = append(aliases, truncate(a, MaxNameChars))
+			}
+			line += " ; mots-clés : " + strings.Join(aliases, ", ")
 		}
 		if c.parent != "" {
-			line += " ; parent : " + c.parent
+			line += " ; parent : " + truncate(c.parent, MaxNameChars)
 		}
 		candidates = append(candidates, line)
 	}
@@ -136,13 +141,21 @@ func (d promptData) header() string {
 }
 
 // The longest list loses its last entry first: 60 candidates with long keywords must not push out the only
-// pending point, which would then never be closed.
+// pending point, which would then never be closed. The session's repositories always stay: one 16 000-character
+// keyword on a repository once emptied the whole candidate list.
 func (d *promptData) fit() {
+	pinned := 0
+	for pinned < len(d.candidates) && d.candidates[pinned].session {
+		pinned++
+	}
 	for utf8.RuneCountInString(d.header()) > MaxDataChars {
-		switch n := max(len(d.candidates), len(d.current), len(d.open)); n {
-		case len(d.candidates):
-			d.candidates = d.candidates[:n-1]
-		case len(d.current):
+		spare := len(d.candidates) - pinned
+		switch n := max(spare, len(d.current), len(d.open)); {
+		case n == 0:
+			return
+		case n == spare:
+			d.candidates = d.candidates[:len(d.candidates)-1]
+		case n == len(d.current):
 			d.current = d.current[:n-1]
 		default:
 			d.open = d.open[:n-1]

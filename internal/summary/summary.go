@@ -40,6 +40,7 @@ const (
 	MaxShownAliases  = 8
 	MaxPointChars    = 300
 	MaxDataChars     = 15000
+	MaxNameChars     = 80
 )
 
 const (
@@ -447,9 +448,11 @@ func pairs(q db.Querier, query string, args ...any) (map[string]string, error) {
 }
 
 // Words and adjacent word pairs, built once: one strings.Contains per term took 34 s on 6 M characters and
-// 3 000 subjects.
+// 3 000 subjects. Pairs alone found "réseau de la maison" in "réseau de chez moi… de la panne… la maison",
+// so a name whose pairs all occur is confirmed by one Contains.
 func vocabulary(text string) func(term string) bool {
 	words := strings.Fields(subjects.Normalize(text))
+	padded := " " + strings.Join(words, " ") + " "
 	seen := map[string]bool{}
 	for i, w := range words {
 		seen[w] = true
@@ -467,7 +470,7 @@ func vocabulary(text string) func(term string) bool {
 				return false
 			}
 		}
-		return len(key) > 1
+		return len(key) > 1 && strings.Contains(padded, " "+strings.Join(key, " ")+" ")
 	}
 }
 
@@ -502,7 +505,8 @@ func candidates(q db.Querier, sessionID, text string) ([]candidate, error) {
 	})
 	out := []candidate{}
 	for _, s := range all[:min(len(all), MaxCandidates)] {
-		c := candidate{uid: s.UID, kind: s.Kind, name: s.Name, aliases: s.Aliases}
+		_, session := repos[s.UID]
+		c := candidate{uid: s.UID, kind: s.Kind, name: s.Name, aliases: s.Aliases, session: session}
 		if s.ParentUID != nil {
 			c.parent = names[*s.ParentUID]
 		}

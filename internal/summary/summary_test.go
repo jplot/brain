@@ -421,8 +421,8 @@ func runes(s string) int { return utf8.RuneCountInString(s) }
 
 func TestBounds(t *testing.T) {
 	got := []any{ChunkChars, Timeout, Quiet, HintsWait, Retry, MaxFailures, MaxChunks, MaxCandidates, MaxOpenPoints,
-		MaxCurrentPoints, MaxShownAliases, MaxPointChars, MaxDataChars}
-	want := []any{60000, 300 * time.Second, 30 * time.Minute, 24 * time.Hour, time.Hour, 3, 100, 60, 30, 30, 8, 300, 15000}
+		MaxCurrentPoints, MaxShownAliases, MaxPointChars, MaxDataChars, MaxNameChars}
+	want := []any{60000, 300 * time.Second, 30 * time.Minute, 24 * time.Hour, time.Hour, 3, 100, 60, 30, 30, 8, 300, 15000, 80}
 	if !slices.Equal(got, want) {
 		t.Fatalf("%v", got)
 	}
@@ -1812,6 +1812,86 @@ func TestDataBlockTrimKeepsChecksConsistent(t *testing.T) {
 	f.summarize("s1", newModel(with(answer(), "closes", ids(open...))).run)
 	if n := f.count("SELECT count(*) FROM points WHERE closed_at IS NOT NULL"); n != len(d.open) {
 		t.Fatal(n, len(d.open))
+	}
+}
+
+func TestGiantNamesTruncatedNotTrimmed(t *testing.T) {
+	f := newFixture(t)
+	repo := f.repo("s1")
+	if err := subjects.AddAliases(f.db, repo, []string{strings.Repeat("x", 16000)}); err != nil {
+		t.Fatal(err)
+	}
+	giant := f.subject(strings.Repeat("n", 16000))
+	child := f.subject("Enfant")
+	if err := subjects.SetParent(f.db, child, giant, subjects.Origin{User: true}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 10 {
+		f.subject(fmt.Sprintf("Autre %d", i))
+	}
+	shown := f.openPoint(f.oldEpisode("Vieux résumé"))
+	f.seed("s1", greeting...)
+	m := newModel(answer())
+	f.summarize("s1", m.run)
+	prompt := m.calls[0].prompt
+	for _, want := range []string{"\n" + repo + " (repo) depot ; mots-clés : " + strings.Repeat("x", MaxNameChars) + "\n",
+		"\n" + giant + " (subject) " + strings.Repeat("n", MaxNameChars) + "\n",
+		" (subject) Enfant ; parent : " + strings.Repeat("n", MaxNameChars) + "\n", fmt.Sprintf("\n#%d À faire", shown)} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("%q missing", want[:min(len(want), 120)])
+		}
+	}
+	if n := strings.Count(prompt, " (subject) "); n != 13 {
+		t.Fatal(n)
+	}
+}
+
+func TestSessionReposNeverTrimmed(t *testing.T) {
+	f := newFixture(t)
+	var repos []string
+	for i := range 25 {
+		uid, err := subjects.EnsureRepo(f.db, fmt.Sprintf("example.org/o/depot%02d", i), fmt.Sprintf("depot%02d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var aliases []string
+		for j := range MaxShownAliases {
+			aliases = append(aliases, fmt.Sprintf("%02d %d %s", i, j, strings.Repeat("y", MaxNameChars-5)))
+		}
+		if err := subjects.AddAliases(f.db, uid, aliases); err != nil {
+			t.Fatal(err)
+		}
+		f.exec("INSERT INTO session_repos(session_id, subject_uid) VALUES ('s1', ?)", uid)
+		repos = append(repos, uid)
+	}
+	for i := range 10 {
+		f.subject(fmt.Sprintf("Autre %d", i))
+	}
+	d, err := gather(f.db, "s1", "", now0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := uidsOf(d.candidates)
+	slices.Sort(got)
+	slices.Sort(repos)
+	if !slices.Equal(got, repos) || runes(d.header()) <= MaxDataChars {
+		t.Fatal(len(got), runes(d.header()))
+	}
+}
+
+func TestMultiWordNameNeedsExactOccurrence(t *testing.T) {
+	scattered := vocabulary("Le réseau de chez moi est lent. Il parle de la panne. On a rangé la maison hier.")
+	for _, term := range []string{"Réseau de la maison", "Box de la fibre", "Mise à jour de la box"} {
+		if scattered(term) {
+			t.Fatal(term)
+		}
+	}
+	if vocabulary("La mise à jour est faite. Le jour de la livraison, la box était éteinte.")("Mise à jour de la box") {
+		t.Fatal("mise à jour de la box")
+	}
+	real := vocabulary("Hier soir, le RÉSEAU de la maison a encore planté.")
+	if !real("Réseau de la maison") || !real("réseau") || real("maison planté") {
+		t.Fatal("real occurrence")
 	}
 }
 
