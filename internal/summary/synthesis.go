@@ -150,7 +150,7 @@ func readSynthesis(output map[string]any, given []shownPoint) (string, []int64, 
 		}
 	}
 	if len(cited) < MinCited || len(cited) > MaxCited {
-		return "", nil, &Error{msg: "invalid number of cited points"}
+		return "", nil, &Error{msg: fmt.Sprintf("invalid number of cited points: %d", len(cited))}
 	}
 	return text, cited, nil
 }

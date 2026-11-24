@@ -567,6 +567,21 @@ func TestSynthesisFailureLogNamesSubject(t *testing.T) {
 	}
 }
 
+func TestSynthesisFailureLogsCitedCount(t *testing.T) {
+	f := newFixture(t)
+	var many []int64
+	for range 11 {
+		many = append(many, f.subjectPoint(f.home, 1, t0))
+	}
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	Synthesize(f.db, camille, f.home, newModel(synthesisOf("ok", many...)).run, now0)
+	if got := buf.String(); !strings.Contains(got, "(invalid number of cited points: 11)") {
+		t.Fatal(got)
+	}
+}
+
 func TestSynthesisReadErrorIsBusy(t *testing.T) {
 	f := newFixture(t)
 	f.backlog(f.home, 15)
