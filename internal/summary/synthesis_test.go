@@ -182,17 +182,10 @@ func TestSynthesisCitesOnlyGivenPoints(t *testing.T) {
 	points := f.backlog(f.home, 15)
 	other := f.subject("Autre")
 	foreign := f.subjectPoint(other, 5, t0)
-	var many []int64
-	for range 11 {
-		many = append(many, f.subjectPoint(f.home, 1, t0))
-	}
 	long := strings.Repeat("é", 601)
 	for name, bad := range map[string]map[string]any{
 		"foreign point": synthesisOf("ok", points[0], foreign),
 		"unknown point": synthesisOf("ok", points[0], 9999),
-		"one point":     synthesisOf("ok", points[0]),
-		"duplicates":    synthesisOf("ok", points[0], points[0]),
-		"eleven points": synthesisOf("ok", many...),
 		"too long":      synthesisOf(long, points[0], points[1]),
 		"blank":         synthesisOf("  ", points[0], points[1]),
 		"no cited":      {"text": "ok"},
@@ -567,18 +560,35 @@ func TestSynthesisFailureLogNamesSubject(t *testing.T) {
 	}
 }
 
-func TestSynthesisFailureLogsCitedCount(t *testing.T) {
-	f := newFixture(t)
-	var many []int64
-	for range 11 {
-		many = append(many, f.subjectPoint(f.home, 1, t0))
+func TestSynthesisAcceptsAnyCitedCount(t *testing.T) {
+	for _, count := range []int{0, 1, 11} {
+		f := newFixture(t)
+		points := f.backlog(f.home, 15)
+		for len(points) < count {
+			points = append(points, f.subjectPoint(f.home, 1, t0))
+		}
+		out := Synthesize(f.db, camille, f.home, newModel(synthesisOf("ok", points[:count]...)).run, now0)
+		if out.Status != Synthesized || out.Points != count {
+			t.Fatalf("%d: %+v", count, out)
+		}
 	}
+}
+
+func TestSynthesisTooLongLogsLength(t *testing.T) {
+	f := newFixture(t)
+	points := f.backlog(f.home, 15)
 	var buf bytes.Buffer
 	log.SetOutput(&buf)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	Synthesize(f.db, camille, f.home, newModel(synthesisOf("ok", many...)).run, now0)
-	if got := buf.String(); !strings.Contains(got, "(invalid number of cited points: 11)") {
+	Synthesize(f.db, camille, f.home, newModel(synthesisOf(strings.Repeat("é", 601), points[0], points[1])).run, now0)
+	if got := buf.String(); !strings.Contains(got, "(synthesis too long: 601)") {
 		t.Fatal(got)
+	}
+}
+
+func TestSynthesisAsksForLessThanAccepted(t *testing.T) {
+	if !strings.Contains(synthesisSystem(camille), "at most 450 characters") {
+		t.Fatal(synthesisSystem(camille))
 	}
 }
 
