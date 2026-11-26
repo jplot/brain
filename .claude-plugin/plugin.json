@@ -1,6 +1,6 @@
 {
   "name": "paul",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Persistent memory for Claude Code: remembers conversations, distills them into memories attached to subjects, and brings them back when they come up.",
   "repository": "https://github.com/jplot/brain"
 }
