@@ -316,6 +316,38 @@ func Relevance(q db.Querier, terms []string, ids []int64) (map[int64]float64, er
 	return out, nil
 }
 
+// Reach is what a session may be shown: All when it has no known repo, otherwise the points of
+// Subjects and those that come from a session which worked in one of Repos.
+type Reach struct {
+	All      bool
+	Subjects []string
+	Repos    []string
+}
+
+func NearPoints(q db.Querier, terms []string, r Reach, limit int) ([]Point, error) {
+	if len(terms) == 0 {
+		return nil, nil
+	}
+	where, args := "", []any{search.MatchAny(terms)}
+	if !r.All {
+		subjectsJSON, err := json.Marshal(append([]string{}, r.Subjects...))
+		if err != nil {
+			return nil, err
+		}
+		reposJSON, err := json.Marshal(append([]string{}, r.Repos...))
+		if err != nil {
+			return nil, err
+		}
+		where = " AND (p.subject_uid IN (SELECT value FROM json_each(?))" +
+			" OR e.session_id IN (SELECT session_id FROM session_repos WHERE subject_uid IN (SELECT value FROM json_each(?))))"
+		args = append(args, string(subjectsJSON), string(reposJSON))
+	}
+	return queryPoints(q, "SELECT "+pointCols+" FROM points_fts f JOIN points p ON p.id = f.rowid"+
+		" JOIN episodes e ON e.id = p.episode_id LEFT JOIN subjects s ON s.uid = p.subject_uid LEFT JOIN point_usage u ON u.uid = p.uid"+
+		" WHERE points_fts MATCH ? AND p.superseded_by_uid IS NULL AND NOT (p.kind = 'pending' AND p.closed_at IS NOT NULL)"+
+		where+" ORDER BY f.rank LIMIT ?", append(args, limit))
+}
+
 func MarkUsed(q db.Querier, uids []string, at time.Time) error {
 	for _, uid := range uids {
 		if _, err := q.ExecContext(background, "INSERT INTO point_usage(uid, last_used_at) VALUES (?, ?)"+

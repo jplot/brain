@@ -900,3 +900,68 @@ func TestForgetSessionDropsTheSubjectItCreatedWithItsSynthesis(t *testing.T) {
 		t.Fatalf("%d synthesis rows kept", n)
 	}
 }
+
+func (f *fixture) near(terms []string, r Reach, limit int) []int64 {
+	f.t.Helper()
+	points, err := NearPoints(f.db, terms, r, limit)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	ids := make([]int64, len(points))
+	for i, p := range points {
+		ids[i] = p.ID
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+func TestNearPointsByReach(t *testing.T) {
+	f := newFixture(t)
+	repoA := f.subject("verger-api", nil)
+	perso := f.subject("jardin", nil)
+	other := f.subject("autre", nil)
+	f.exec("INSERT INTO session_repos VALUES ('s-a', ?)", repoA)
+	inA := f.episode("s-a", t0, "T", "R")
+	elsewhere := f.episode("s-b", t0, "T", "R")
+	own := f.point(elsewhere, pt{text: "jetons verger", subject: repoA})
+	loose := f.point(inA, pt{text: "jetons sans sujet"})
+	fromA := f.point(inA, pt{text: "jetons rangés ailleurs", subject: other})
+	private := f.point(elsewhere, pt{text: "jetons du jardin", subject: perso})
+	terms := []string{"jetons"}
+	if got := f.near(terms, Reach{Subjects: []string{repoA}, Repos: []string{repoA}}, 50); !slices.Equal(got, []int64{own, loose, fromA}) {
+		t.Fatalf("repo reach %v", got)
+	}
+	all := []int64{own, loose, fromA, private}
+	if got := f.near(terms, Reach{Subjects: []string{repoA, perso}, Repos: []string{repoA}}, 50); !slices.Equal(got, all) {
+		t.Fatalf("named subject %v", got)
+	}
+	if got := f.near(terms, Reach{All: true}, 50); !slices.Equal(got, all) {
+		t.Fatalf("all %v", got)
+	}
+}
+
+func TestNearPointsInForceOnly(t *testing.T) {
+	f := newFixture(t)
+	e := f.defaultEpisode()
+	open := f.point(e, pt{kind: "pending", text: "jetons à renouveler"})
+	closed := f.point(e, pt{kind: "pending", text: "jetons à purger"})
+	f.exec("UPDATE points SET closed_at = ? WHERE id = ?", t0, closed)
+	f.point(e, pt{text: "jetons d'avant", supersede: "p-new"})
+	if got := f.near([]string{"jetons"}, Reach{All: true}, 50); !slices.Equal(got, []int64{open}) {
+		t.Fatalf("%v", got)
+	}
+}
+
+func TestNearPointsNoTermsAndLimit(t *testing.T) {
+	f := newFixture(t)
+	e := f.defaultEpisode()
+	for range 60 {
+		f.point(e, pt{text: "jetons"})
+	}
+	if got := f.near(nil, Reach{All: true}, 50); len(got) != 0 {
+		t.Fatalf("no terms %v", got)
+	}
+	if got := f.near([]string{"jetons"}, Reach{All: true}, 50); len(got) != 50 {
+		t.Fatalf("limit %d", len(got))
+	}
+}
