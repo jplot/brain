@@ -56,7 +56,9 @@ func Run(event string, p paths.Paths, stdin io.Reader, stdout io.Writer) int {
 	case "prompt":
 		if in.SessionID != "" && in.Prompt != "" {
 			emit(stdout, "UserPromptSubmit", promptBudget, func() (string, func() error, error) {
-				inj, err := withDB(p, func(d *sql.DB) (memo.Injection, error) { return memo.Plan(d, in.SessionID, in.Prompt) })
+				inj, err := withDB(p, func(d *sql.DB) (memo.Injection, error) {
+					return memo.Plan(d, in.SessionID, cwdOrCurrent(in.Cwd), in.Prompt)
+				})
 				return inj.Text, recorder(p, inj), err
 			})
 		}
