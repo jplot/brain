@@ -298,3 +298,15 @@ func TestPointsBySubjectIndexed(t *testing.T) {
 		t.Fatal(plan)
 	}
 }
+
+func TestSessionReposSearchedBySubject(t *testing.T) {
+	d := open(t)
+	var id, parent, unused int
+	var detail string
+	if err := d.QueryRowContext(ctx, "EXPLAIN QUERY PLAN SELECT session_id FROM session_repos WHERE subject_uid = 'x'").Scan(&id, &parent, &unused, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(detail, "SEARCH") {
+		t.Fatalf("plan %q", detail)
+	}
+}

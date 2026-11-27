@@ -78,6 +78,7 @@ CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
 END;
 CREATE TABLE IF NOT EXISTS session_repos(
     session_id TEXT NOT NULL, subject_uid TEXT NOT NULL, PRIMARY KEY(session_id, subject_uid));
+CREATE INDEX IF NOT EXISTS session_repos_subject ON session_repos(subject_uid);
 CREATE TABLE IF NOT EXISTS repo_cache(
     path TEXT PRIMARY KEY, subject_uid TEXT, checked_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS pending_paths(
