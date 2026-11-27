@@ -3,6 +3,7 @@ package memo
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -218,7 +219,7 @@ func TestIndexWithinLimit(t *testing.T) {
 	f.point(uid, "decision", long, 5, false)
 	f.session("s1", long, "2026-11-20T10:00:00.000Z", uid)
 	f.session("s2", long, "2026-11-21T10:00:00.000Z", uid)
-	got, err := Index(f.db, uid, []string{"mot"})
+	got, err := Index(f.db, uid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +241,7 @@ func TestIndexShowsSynthesisAndTopScored(t *testing.T) {
 	f.point(uid, "pending", "closed task never shown", 5, true)
 	f.point(uid, "pending", "open task", 2, false)
 	f.session("s1", "Invoice rounding", "2026-11-20T10:00:00.000Z", uid)
-	got, err := Index(f.db, uid, []string{"rounded"})
+	got, err := Index(f.db, uid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +264,7 @@ func TestIndexIgnoresStaleSynthesis(t *testing.T) {
 	f := newFixture(t)
 	uid := f.subject("Billing")
 	f.exec("INSERT INTO syntheses(subject_uid, uid, text, stale, created_at, updated_at) VALUES (?, 'y', 'Quotes a forgotten point.', 1, 't', 't')", uid)
-	got, _ := Index(f.db, uid, nil)
+	got, _ := Index(f.db, uid)
 	if strings.Contains(got, "forgotten") {
 		t.Fatal(got)
 	}
@@ -478,7 +479,7 @@ func TestIndexNeverShowsDescendantPoints(t *testing.T) {
 	f.point(child, "pending", "child secret pending", 5, false)
 	f.point(repo, "fact", "own fact of the repository", 1, false)
 	f.exec("INSERT INTO repo_cache VALUES ('/work/widget', ?, 't')", repo)
-	index, err := Index(f.db, repo, []string{"child", "secret"})
+	index, err := Index(f.db, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -565,7 +566,7 @@ func TestStaleEpisodeTitleNeverShown(t *testing.T) {
 	f.exec("INSERT INTO episodes(uid, session_id, start_ts, end_ts, title, summary, created_at, updated_at, summary_stale)"+
 		" VALUES ('stale', 's1', ?1, ?1, 'TITRE-PERIME', 'r', ?1, ?1, 1)", "2026-11-20T11:00:00.000Z")
 	f.exec("INSERT INTO episode_subjects VALUES ('stale', ?)", a)
-	index, err := Index(f.db, a, nil)
+	index, err := Index(f.db, a)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -778,5 +779,93 @@ func TestForgetInjectedClearsOnlyTheSession(t *testing.T) {
 	rows.Close()
 	if len(left) != 1 || left[0] != "s2" {
 		t.Fatalf("%v", left)
+	}
+}
+
+func gitFolder(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(dir, "src")
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return sub
+}
+
+func (f *fixture) vergerAndJardin() (string, string) {
+	f.t.Helper()
+	repoA, err := repo.Ensure(f.db, repo.Info{Identity: "github.com/exemple/verger-api", Name: "verger-api", Folder: "verger"})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	f.exec("INSERT INTO repo_cache(path, subject_uid, checked_at) VALUES ('/w/verger', ?, 't')", repoA)
+	perso := f.subject("jardin")
+	f.pointIn("s-a", repoA, "fact", "jetons du verger", "2026-11-01T10:00:00.000Z")
+	f.pointIn("s-b", perso, "fact", "jetons du potager", "2026-11-01T10:00:00.000Z")
+	return repoA, perso
+}
+
+func TestInjectInAnUncachedGitFolderShowsOnlyNamedSubjects(t *testing.T) {
+	f := newFixture(t)
+	f.vergerAndJardin()
+	dir := gitFolder(t)
+	if got, _ := recordedInjectIn(f.db, "s1", dir, "les jetons"); len(pointLines(got)) != 0 {
+		t.Fatalf("leaked:\n%s", got)
+	}
+	if got, _ := recordedInjectIn(f.db, "s2", dir, "les jetons du jardin"); !strings.Contains(got, "potager") || strings.Contains(got, "du verger") {
+		t.Fatalf("named subject:\n%s", got)
+	}
+}
+
+func TestInjectKeepsTheLaunchRepoInAWorktree(t *testing.T) {
+	f := newFixture(t)
+	f.vergerAndJardin()
+	if err := NoteLaunchRepo(f.db, "s1", "/w/verger/src"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := recordedInjectIn(f.db, "s1", "/w/worktrees/verger-feature", "les jetons")
+	if strings.Contains(got, "potager") || !strings.Contains(got, "du verger") {
+		t.Fatalf("got\n%s", got)
+	}
+}
+
+func TestStartInAnUncachedGitFolderShowsNoOverview(t *testing.T) {
+	f := newFixture(t)
+	f.session("s1", "Jardin du dimanche", "2026-11-10T10:00:00.000Z")
+	if got, err := recordedStart(f.db, gitFolder(t), "new", now); err != nil || got != "" {
+		t.Fatalf("%v %q", err, got)
+	}
+}
+
+func TestInjectShowsEveryPointOnceOverALongSession(t *testing.T) {
+	f := newFixture(t)
+	for i := range 55 {
+		f.pointIn("s-old", "", "fact", fmt.Sprint("jetons numéro ", i), "2026-11-01T10:00:00.000Z")
+	}
+	for i := range 500 {
+		f.pointIn("s-old", "", "fact", fmt.Sprint("remplissage ", i), "2026-11-01T10:00:00.000Z")
+	}
+	seen := map[string]bool{}
+	for range 11 {
+		got, _ := recordedInject(f.db, "s1", "les jetons")
+		for _, line := range pointLines(got) {
+			seen[line] = true
+		}
+	}
+	if len(seen) != 55 {
+		t.Fatalf("%d distinct points shown", len(seen))
+	}
+}
+
+func TestInjectCommonWordsBringNothing(t *testing.T) {
+	f := newFixture(t)
+	for i := range 60 {
+		f.pointIn("s-old", "", "fact", fmt.Sprint("les tests numéro ", i), "2026-11-01T10:00:00.000Z")
+	}
+	if got, _ := recordedInject(f.db, "s1", "oui ajoute les tests à la maquette"); len(pointLines(got)) != 0 {
+		t.Fatalf("%s", got)
 	}
 }

@@ -593,3 +593,20 @@ func TestHookStartCompactForgetsInjected(t *testing.T) {
 		t.Fatalf("sess %d, other %d", n, other)
 	}
 }
+
+func TestHookStartNotesTheLaunchRepo(t *testing.T) {
+	f := newFixture(t)
+	uid, err := subjects.Create(f.db(), "verger-api", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db().Exec("INSERT INTO repo_cache(path, subject_uid, checked_at) VALUES ('/w/verger', ?, 't')", uid); err != nil {
+		t.Fatal(err)
+	}
+	f.run("start", payloadJSON(t, map[string]any{"source": "startup", "cwd": "/w/verger/src", "session_id": "sess"}))
+	var n int
+	f.db().QueryRow("SELECT count(*) FROM session_repos WHERE session_id = 'sess' AND subject_uid = ?", uid).Scan(&n)
+	if n != 1 {
+		t.Fatal("launch repo not noted")
+	}
+}

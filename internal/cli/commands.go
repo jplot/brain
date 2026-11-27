@@ -356,7 +356,7 @@ func memoCmd(e *env, args []string) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		text, err = memo.Index(conn, s.UID, nil)
+		text, err = memo.Index(conn, s.UID)
 		if err != nil {
 			return 0, err
 		}

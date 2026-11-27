@@ -48,15 +48,9 @@ func Run(event string, p paths.Paths, stdin io.Reader, stdout io.Writer) int {
 		if in.Source == "startup" || in.Source == "clear" || in.Source == "compact" {
 			emit(stdout, "SessionStart", startBudget, func() (string, func() error, error) {
 				inj, err := withDB(p, func(d *sql.DB) (memo.Injection, error) {
-					// The compaction summary drops what was injected, so the session may be shown it again.
-					if in.Source == "compact" {
-						if err := memo.ForgetInjected(d, in.SessionID); err != nil {
-							return memo.Injection{}, err
-						}
-					}
 					return memo.PlanStart(d, cwdOrCurrent(in.Cwd), in.SessionID, time.Now())
 				})
-				return inj.Text, recorder(p, inj), err
+				return inj.Text, startRecorder(p, inj, in), err
 			})
 		}
 	case "prompt":
@@ -101,6 +95,25 @@ func cwdOrCurrent(cwd string) string {
 func recorder(p paths.Paths, inj memo.Injection) func() error {
 	return func() error {
 		_, err := withDB(p, func(d *sql.DB) (struct{}, error) { return struct{}{}, inj.Record(d, time.Now()) })
+		return err
+	}
+}
+
+// Writing comes after the memo: a summary holding the database must not cost the session its memo.
+func startRecorder(p paths.Paths, inj memo.Injection, in payload) func() error {
+	return func() error {
+		_, err := withDB(p, func(d *sql.DB) (struct{}, error) {
+			// The compaction summary drops what was injected, so the session may be shown it again.
+			if in.Source == "compact" {
+				if err := memo.ForgetInjected(d, in.SessionID); err != nil {
+					return struct{}{}, err
+				}
+			}
+			if err := memo.NoteLaunchRepo(d, in.SessionID, cwdOrCurrent(in.Cwd)); err != nil {
+				return struct{}{}, err
+			}
+			return struct{}{}, inj.Record(d, time.Now())
+		})
 		return err
 	}
 }

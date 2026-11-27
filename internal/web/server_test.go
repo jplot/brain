@@ -1213,7 +1213,7 @@ func TestMemo(t *testing.T) {
 		Text string `json:"text"`
 	}
 	f.get("/api/memo?subject="+w.a).json(t, &got)
-	want, err := memo.Index(f.conn, w.a, nil)
+	want, err := memo.Index(f.conn, w.a)
 	if err != nil {
 		t.Fatal(err)
 	}

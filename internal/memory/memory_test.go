@@ -903,7 +903,7 @@ func TestForgetSessionDropsTheSubjectItCreatedWithItsSynthesis(t *testing.T) {
 
 func (f *fixture) near(terms []string, r Reach, limit int) []int64 {
 	f.t.Helper()
-	points, err := NearPoints(f.db, terms, r, limit)
+	points, _, err := NearPoints(f.db, terms, r, nil, limit)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -958,10 +958,77 @@ func TestNearPointsNoTermsAndLimit(t *testing.T) {
 	for range 60 {
 		f.point(e, pt{text: "jetons"})
 	}
+	for range 600 {
+		f.point(e, pt{text: "remplissage"})
+	}
 	if got := f.near(nil, Reach{All: true}, 50); len(got) != 0 {
 		t.Fatalf("no terms %v", got)
 	}
 	if got := f.near([]string{"jetons"}, Reach{All: true}, 50); len(got) != 50 {
 		t.Fatalf("limit %d", len(got))
+	}
+}
+
+func TestNearPointsSkipsCommonTerms(t *testing.T) {
+	f := newFixture(t)
+	e := f.defaultEpisode()
+	for i := range 60 {
+		f.point(e, pt{text: fmt.Sprint("les choses ", i)})
+	}
+	jetons := f.point(e, pt{text: "les jetons expirent"})
+	if got := f.near([]string{"les", "jetons"}, Reach{All: true}, 50); !slices.Equal(got, []int64{jetons}) {
+		t.Fatalf("common term kept: %v", got)
+	}
+	if got := f.near([]string{"les"}, Reach{All: true}, 50); len(got) != 0 {
+		t.Fatalf("only common terms: %v", got)
+	}
+}
+
+func TestNearPointsKeepsTermsOfASmallBase(t *testing.T) {
+	f := newFixture(t)
+	e := f.defaultEpisode()
+	for range 10 {
+		f.point(e, pt{text: "les jetons"})
+	}
+	if got := f.near([]string{"les"}, Reach{All: true}, 50); len(got) != 10 {
+		t.Fatalf("%v", got)
+	}
+}
+
+func TestNearPointsRelevanceFromItsOwnTerms(t *testing.T) {
+	f := newFixture(t)
+	e := f.defaultEpisode()
+	both := f.point(e, pt{text: "kilo lima"})
+	one := f.point(e, pt{text: "lima seul ici"})
+	terms := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet", "kilo", "lima"}
+	points, relevance, err := NearPoints(f.db, terms, Reach{All: true}, nil, 50)
+	if err != nil || len(points) != 2 {
+		t.Fatalf("%v %v", err, points)
+	}
+	if relevance[both] != 1 || relevance[one] != 0 {
+		t.Fatalf("%v", relevance)
+	}
+}
+
+func TestNearPointsExcludesBeforeLimit(t *testing.T) {
+	f := newFixture(t)
+	e := f.defaultEpisode()
+	for range 60 {
+		f.point(e, pt{text: "jetons"})
+	}
+	for range 600 {
+		f.point(e, pt{text: "remplissage"})
+	}
+	first, _, err := NearPoints(f.db, []string{"jetons"}, Reach{All: true}, nil, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	for _, p := range first {
+		seen = append(seen, p.UID)
+	}
+	rest, _, err := NearPoints(f.db, []string{"jetons"}, Reach{All: true}, seen, 50)
+	if err != nil || len(rest) != 10 {
+		t.Fatalf("%v: %d left", err, len(rest))
 	}
 }

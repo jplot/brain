@@ -767,7 +767,7 @@ func TestMemoShowsWhatClaudeReceives(t *testing.T) {
 	pg.has("pre", "Latest sessions:")
 	pg.fill(`[data-key="memo-subject"]`, w.a)
 	pg.has("pre", "Subject \"Alpha\"")
-	want, err := memo.Index(f.conn, w.a, nil)
+	want, err := memo.Index(f.conn, w.a)
 	if err != nil {
 		t.Fatal(err)
 	}

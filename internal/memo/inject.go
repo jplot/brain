@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -235,32 +237,45 @@ func nearPoints(q db.Querier, sessionID, cwd string, words []string, named []sub
 	if repo != "" && !slices.Contains(repos, repo) {
 		repos = append(repos, repo)
 	}
-	reach := memory.Reach{All: len(repos) == 0, Repos: repos, Subjects: slices.Clone(repos)}
+	reach := memory.Reach{All: len(repos) == 0 && !insideGit(cwd), Repos: repos, Subjects: slices.Clone(repos)}
 	for _, s := range named {
 		reach.Subjects = append(reach.Subjects, s.UID)
 	}
-	found, err := memory.NearPoints(q, words, reach, candidates)
+	seen, err := column(q, "SELECT substr(subject_uid, 7) FROM injected WHERE session_id = ? AND subject_uid LIKE 'point:%'", sessionID)
 	if err != nil {
 		return nil, err
 	}
-	seen, err := column(q, "SELECT subject_uid FROM injected WHERE session_id = ? AND subject_uid LIKE 'point:%'", sessionID)
-	if err != nil {
-		return nil, err
-	}
-	fresh := slices.DeleteFunc(found, func(p memory.Point) bool { return slices.Contains(seen, "point:"+p.UID) })
-	ids := make([]int64, len(fresh))
-	for i, p := range fresh {
-		ids[i] = p.ID
-	}
-	relevance, err := memory.Relevance(q, words[:min(len(words), maxTerms)], ids)
+	found, relevance, err := memory.NearPoints(q, words, reach, seen, candidates)
 	if err != nil {
 		return nil, err
 	}
 	var out []memory.Point
-	for _, s := range memory.Score(fresh, relevance, time.Now())[:min(len(fresh), maxPoints)] {
+	for _, s := range memory.Score(found, relevance, time.Now())[:min(len(found), maxPoints)] {
 		out = append(out, s.Point)
 	}
 	return out, nil
+}
+
+// A repository repoSubject does not know yet is still not "outside any repository": it gets no overview.
+func insideGit(cwd string) bool {
+	for dir := filepath.Clean(cwd); ; dir = filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return true
+		}
+		if dir == filepath.Dir(dir) {
+			return false
+		}
+	}
+}
+
+// NoteLaunchRepo keeps the reach of a session that moves to a worktree repo_cache does not know.
+func NoteLaunchRepo(q db.Querier, sessionID, cwd string) error {
+	uid, err := repoSubject(q, cwd)
+	if err != nil || uid == "" || sessionID == "" {
+		return err
+	}
+	_, err = q.ExecContext(background, "INSERT OR IGNORE INTO session_repos(session_id, subject_uid) VALUES (?, ?)", sessionID, uid)
+	return err
 }
 
 func column(q db.Querier, query string, args ...any) ([]string, error) {

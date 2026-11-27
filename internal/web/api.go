@@ -447,7 +447,7 @@ func memoText(s *server, r *request) (any, error) {
 	if len(found) > 1 {
 		return nil, &subjects.ErrAmbiguousSubject{Term: term, Candidates: found}
 	}
-	text, err := memo.Index(s.conn, found[0].UID, nil)
+	text, err := memo.Index(s.conn, found[0].UID)
 	return map[string]string{"text": text}, err
 }
 

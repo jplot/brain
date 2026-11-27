@@ -21,8 +21,10 @@ import (
 )
 
 const (
-	day       = "2006-01-02"
-	pointCols = "p.id, p.episode_id, p.uid, p.kind, p.text, p.importance, p.source_ts, p.created_at," +
+	commonShare = 10
+	commonFloor = 50
+	day         = "2006-01-02"
+	pointCols   = "p.id, p.episode_id, p.uid, p.kind, p.text, p.importance, p.source_ts, p.created_at," +
 		" p.closed_at, p.corrected, p.updated_at, p.subject_uid, s.name, u.last_used_at"
 )
 
@@ -299,6 +301,11 @@ func Relevance(q db.Querier, terms []string, ids []int64) (map[int64]float64, er
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	normalize(out)
+	return out, nil
+}
+
+func normalize(out map[int64]float64) {
 	lo, hi := math.Inf(1), math.Inf(-1)
 	for _, v := range out {
 		lo, hi = min(lo, v), max(hi, v)
@@ -313,7 +320,6 @@ func Relevance(q db.Querier, terms []string, ids []int64) (map[int64]float64, er
 			out[id] = 0
 		}
 	}
-	return out, nil
 }
 
 // Reach is what a session may be shown: All when it has no known repo, otherwise the points of
@@ -324,28 +330,97 @@ type Reach struct {
 	Repos    []string
 }
 
-func NearPoints(q db.Querier, terms []string, r Reach, limit int) ([]Point, error) {
-	if len(terms) == 0 {
-		return nil, nil
+func NearPoints(q db.Querier, terms []string, r Reach, exclude []string, limit int) ([]Point, map[int64]float64, error) {
+	terms, err := rareTerms(q, terms)
+	if err != nil || len(terms) == 0 {
+		return nil, nil, err
 	}
-	where, args := "", []any{search.MatchAny(terms)}
+	excluded, err := json.Marshal(append([]string{}, exclude...))
+	if err != nil {
+		return nil, nil, err
+	}
+	where, args := "", []any{search.MatchAny(terms), string(excluded)}
 	if !r.All {
 		subjectsJSON, err := json.Marshal(append([]string{}, r.Subjects...))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		reposJSON, err := json.Marshal(append([]string{}, r.Repos...))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		where = " AND (p.subject_uid IN (SELECT value FROM json_each(?))" +
 			" OR e.session_id IN (SELECT session_id FROM session_repos WHERE subject_uid IN (SELECT value FROM json_each(?))))"
 		args = append(args, string(subjectsJSON), string(reposJSON))
 	}
-	return queryPoints(q, "SELECT "+pointCols+" FROM points_fts f JOIN points p ON p.id = f.rowid"+
-		" JOIN episodes e ON e.id = p.episode_id LEFT JOIN subjects s ON s.uid = p.subject_uid LEFT JOIN point_usage u ON u.uid = p.uid"+
+	rows, err := q.QueryContext(background, "SELECT p.id, -bm25(points_fts) FROM points_fts f JOIN points p ON p.id = f.rowid"+
+		" JOIN episodes e ON e.id = p.episode_id"+
 		" WHERE points_fts MATCH ? AND p.superseded_by_uid IS NULL AND NOT (p.kind = 'pending' AND p.closed_at IS NOT NULL)"+
-		where+" ORDER BY f.rank LIMIT ?", append(args, limit))
+		" AND p.uid NOT IN (SELECT value FROM json_each(?))"+where+" ORDER BY f.rank LIMIT ?", append(args, limit)...)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	relevance := map[int64]float64{}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		var score float64
+		if err := rows.Scan(&id, &score); err != nil {
+			return nil, nil, err
+		}
+		relevance[id] = score
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		return nil, nil, nil
+	}
+	raw, err := json.Marshal(ids)
+	if err != nil {
+		return nil, nil, err
+	}
+	points, err := queryPoints(q, "SELECT "+pointCols+" FROM points p LEFT JOIN subjects s ON s.uid = p.subject_uid"+
+		" LEFT JOIN point_usage u ON u.uid = p.uid WHERE p.id IN (SELECT value FROM json_each(?))", []any{string(raw)})
+	if err != nil {
+		return nil, nil, err
+	}
+	normalize(relevance)
+	return points, relevance, nil
+}
+
+// Among 2 006 points on 2026-11-27, "les" was in 848 and "dans" in 544, "gateway" in 58 and "jetons" in 12:
+// a word in more than a tenth of the points matched anything. A word in 50 points or fewer is always kept.
+func rareTerms(q db.Querier, terms []string) ([]string, error) {
+	if len(terms) == 0 {
+		return nil, nil
+	}
+	var total int
+	if err := q.QueryRowContext(background, "SELECT count(*) FROM points").Scan(&total); err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(terms)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.QueryContext(background, "SELECT term FROM points_vocab WHERE term IN (SELECT value FROM json_each(?)) AND doc <= ?",
+		string(raw), max(total/commonShare, commonFloor))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var term string
+		if err := rows.Scan(&term); err != nil {
+			return nil, err
+		}
+		out = append(out, term)
+	}
+	return out, rows.Err()
 }
 
 func MarkUsed(q db.Querier, uids []string, at time.Time) error {

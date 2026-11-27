@@ -34,6 +34,7 @@ CREATE INDEX IF NOT EXISTS points_subject ON points(subject_uid);
 CREATE VIRTUAL TABLE IF NOT EXISTS points_fts USING fts5(
     text, content='points', content_rowid='id',
     tokenize='unicode61 remove_diacritics 2');
+CREATE VIRTUAL TABLE IF NOT EXISTS points_vocab USING fts5vocab(points_fts, row);
 CREATE TRIGGER IF NOT EXISTS points_ai AFTER INSERT ON points BEGIN
     INSERT INTO points_fts(rowid, text) VALUES (new.id, new.text);
 END;
