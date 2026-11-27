@@ -880,3 +880,18 @@ func TestInjectVeryLongSubjectNameKeepsTheDetailsCommand(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestInjectWithinBudgetFor20000Words(t *testing.T) {
+	f := newFixture(t)
+	f.subject("Alpha")
+	words := make([]string, 20000)
+	for i := range words {
+		words[i] = fmt.Sprint("mot", i)
+	}
+	prompt := "alpha " + strings.Join(words, " ")
+	begin := time.Now()
+	got, err := recordedInject(f.db, "sess", prompt)
+	if elapsed := time.Since(begin); err != nil || elapsed > 50*time.Millisecond || !strings.Contains(got, "Subject \"Alpha\"") {
+		t.Fatalf("%v %v\n%s", elapsed, err, got)
+	}
+}
