@@ -1,6 +1,6 @@
 # paul
 
-Persistent memory for Claude Code. paul indexes conversations, distills them into memories (topics, decisions, pending items, facts) attached to subjects, and reports them to Claude when they come up: at session start, then on every message that touches a known subject.
+Persistent memory for Claude Code. paul indexes conversations, distills them into memories (topics, decisions, pending items, facts) attached to subjects, and reports them to Claude when they come up: at session start, then on every message, with the memories closest to it.
 
 The memory stays on the machine, in `~/.claude/paul/`, but the text of conversations, with secrets masked, is sent to the model to be summarized (see "Summaries"). Secrets found in messages are masked before indexing.
 
