@@ -204,8 +204,8 @@ func day(stamp string) string {
 }
 
 func subjectLine(q db.Querier, s subjects.Subject) (string, error) {
-	name := clip(s.Name, 80)
 	tail := fmt.Sprintf(" Details: paul souvenirs --subject %q", s.Name)
+	name := clip(s.Name, max(subjectLineLimit-utf8.RuneCountInString(tail)-len(`Subject "".`), 12))
 	var text, written string
 	err := q.QueryRowContext(background, "SELECT text, written_at FROM syntheses WHERE subject_uid = ? AND stale = 0", s.UID).Scan(&text, &written)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -218,7 +218,7 @@ func subjectLine(q db.Querier, s subjects.Subject) (string, error) {
 			line = head + sentence + tail
 		}
 	}
-	return clip(line, subjectLineLimit), nil
+	return line, nil
 }
 
 func nearPoints(q db.Querier, sessionID, cwd string, words []string, named []subjects.Subject) ([]memory.Point, error) {

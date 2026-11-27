@@ -869,3 +869,14 @@ func TestInjectCommonWordsBringNothing(t *testing.T) {
 		t.Fatalf("%s", got)
 	}
 }
+
+func TestInjectVeryLongSubjectNameKeepsTheDetailsCommand(t *testing.T) {
+	f := newFixture(t)
+	name := "Projet" + strings.Repeat(" mot", 25)
+	uid := f.subject(name, "chantier")
+	f.exec("INSERT INTO syntheses(subject_uid, uid, text, cited, stale, created_at, updated_at, written_at) VALUES (?, 'y', 'Une synthèse assez longue pour être montrée.', '[]', 0, 't', 't', '2026-11-20T10:00:00.000Z')", uid)
+	got, _ := recordedInject(f.db, "sess", "où en est le chantier ?")
+	if !strings.Contains(got, fmt.Sprintf("Details: paul souvenirs --subject %q", name)) {
+		t.Fatalf("got %q", got)
+	}
+}
