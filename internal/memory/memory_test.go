@@ -1032,3 +1032,14 @@ func TestNearPointsExcludesBeforeLimit(t *testing.T) {
 		t.Fatalf("%v: %d left", err, len(rest))
 	}
 }
+
+func TestNearPointsFindsLigatures(t *testing.T) {
+	f := newFixture(t)
+	e := f.defaultEpisode()
+	joined := f.point(e, pt{text: "le Cœur du moteur"})
+	apart := f.point(e, pt{text: "le coeur du moteur"})
+	vitae := f.point(e, pt{text: "un curriculum vitæ"})
+	if got := f.near([]string{"coeur", "vitae"}, Reach{All: true}, 50); !slices.Equal(got, []int64{joined, apart, vitae}) {
+		t.Fatalf("%v", got)
+	}
+}

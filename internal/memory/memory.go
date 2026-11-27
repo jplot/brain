@@ -331,7 +331,7 @@ type Reach struct {
 }
 
 func NearPoints(q db.Querier, terms []string, r Reach, exclude []string, limit int) ([]Point, map[int64]float64, error) {
-	terms, err := rareTerms(q, terms)
+	terms, err := rareTerms(q, withLigatures(terms))
 	if err != nil || len(terms) == 0 {
 		return nil, nil, err
 	}
@@ -390,6 +390,17 @@ func NearPoints(q db.Querier, terms []string, r Reach, exclude []string, limit i
 	}
 	normalize(relevance)
 	return points, relevance, nil
+}
+
+// subjects.Normalize folds "cœur" to "coeur", but the FTS tokenizer keeps "cœur" whole.
+func withLigatures(terms []string) []string {
+	out := slices.Clone(terms)
+	for _, t := range terms {
+		if joined := strings.NewReplacer("oe", "œ", "ae", "æ").Replace(t); joined != t {
+			out = append(out, joined)
+		}
+	}
+	return out
 }
 
 // Among 2 006 points on 2026-11-27, "les" was in 848 and "dans" in 544, "gateway" in 58 and "jetons" in 12:
