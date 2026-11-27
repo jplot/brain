@@ -45,9 +45,15 @@ func Run(event string, p paths.Paths, stdin io.Reader, stdout io.Writer) int {
 		if err := LinkCommand(p, Version); err != nil {
 			log.Printf("hook start: terminal command: %v", err)
 		}
-		if in.Source == "startup" || in.Source == "clear" {
+		if in.Source == "startup" || in.Source == "clear" || in.Source == "compact" {
 			emit(stdout, "SessionStart", startBudget, func() (string, func() error, error) {
 				inj, err := withDB(p, func(d *sql.DB) (memo.Injection, error) {
+					// The compaction summary drops what was injected, so the session may be shown it again.
+					if in.Source == "compact" {
+						if err := memo.ForgetInjected(d, in.SessionID); err != nil {
+							return memo.Injection{}, err
+						}
+					}
 					return memo.PlanStart(d, cwdOrCurrent(in.Cwd), in.SessionID, time.Now())
 				})
 				return inj.Text, recorder(p, inj), err

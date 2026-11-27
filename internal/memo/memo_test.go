@@ -246,7 +246,7 @@ func TestIndexShowsSynthesisAndTopScored(t *testing.T) {
 	}
 	for _, want := range []string{"Subject \"Billing\" (open pending: 1, decisions in force: 1)",
 		"Synthesis: Billing computes invoices nightly.", "in Platform; depends on Database",
-		"- invoices are rounded per line", "Sessions: 2026-11-20 Invoice rounding"} {
+		"- 2026-11-01 invoices are rounded per line", "Sessions: 2026-11-20 Invoice rounding"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in\n%s", want, got)
 		}
@@ -484,7 +484,7 @@ func TestIndexNeverShowsDescendantPoints(t *testing.T) {
 	}
 	start := mustStart(t, f, "/work/widget")
 	for _, got := range []string{index, start} {
-		if strings.Contains(got, "secret") || !strings.Contains(got, "- own fact of the repository") ||
+		if strings.Contains(got, "secret") || !strings.Contains(got, "- 2026-11-01 own fact of the repository") ||
 			!strings.Contains(got, "(open pending: 0, decisions in force: 0)") {
 			t.Fatalf("got\n%s", got)
 		}
@@ -759,5 +759,24 @@ func TestInjectNoPointWithoutACommonWord(t *testing.T) {
 	got, _ := recordedInject(f.db, "s1", "oui ajoute le à la maquette")
 	if len(pointLines(got)) != 0 {
 		t.Fatalf("%s", got)
+	}
+}
+
+func TestForgetInjectedClearsOnlyTheSession(t *testing.T) {
+	f := newFixture(t)
+	f.exec("INSERT INTO injected VALUES ('s1', 'point:p1'), ('s1', 'u1'), ('s2', 'point:p1')")
+	if err := ForgetInjected(f.db, "s1"); err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	rows, _ := f.db.Query("SELECT session_id FROM injected")
+	for rows.Next() {
+		var s string
+		rows.Scan(&s)
+		left = append(left, s)
+	}
+	rows.Close()
+	if len(left) != 1 || left[0] != "s2" {
+		t.Fatalf("%v", left)
 	}
 }

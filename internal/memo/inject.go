@@ -280,6 +280,11 @@ func column(q db.Querier, query string, args ...any) ([]string, error) {
 	return out, rows.Err()
 }
 
+func ForgetInjected(q db.Querier, sessionID string) error {
+	_, err := q.ExecContext(background, "DELETE FROM injected WHERE session_id = ?", sessionID)
+	return err
+}
+
 func wasInjected(q db.Querier, sessionID, key string) (bool, error) {
 	var n int
 	err := q.QueryRowContext(background, "SELECT count(*) FROM injected WHERE session_id = ? AND subject_uid = ?", sessionID, key).Scan(&n)

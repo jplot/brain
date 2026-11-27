@@ -203,8 +203,8 @@ func TestHookInvalidStdinIsHarmless(t *testing.T) {
 	}
 }
 
-func TestHookStartWritesMemoOnStartupAndClear(t *testing.T) {
-	for _, source := range []string{"startup", "clear"} {
+func TestHookStartWritesMemoOnStartupClearAndCompact(t *testing.T) {
+	for _, source := range []string{"startup", "clear", "compact"} {
 		f := newFixture(t)
 		f.session("s1", "Facturation", "2026-11-10T10:00:00.000Z")
 		out, _ := f.run("start", payloadJSON(t, map[string]any{"source": source, "cwd": "/nowhere", "session_id": "new"}))
@@ -224,7 +224,7 @@ func TestHookStartWritesMemoOnStartupAndClear(t *testing.T) {
 }
 
 func TestHookStartWritesNothingOtherwise(t *testing.T) {
-	for _, source := range []string{"resume", "compact", "", "other"} {
+	for _, source := range []string{"resume", "", "other"} {
 		f := newFixture(t)
 		f.session("s1", "Facturation", "2026-11-10T10:00:00.000Z")
 		if out, _ := f.run("start", payloadJSON(t, map[string]any{"source": source, "cwd": "/nowhere"})); out != "" {
@@ -575,5 +575,21 @@ func TestHookChildrenKeepTheDefaultSigpipe(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("the child inherited an ignored SIGPIPE")
+	}
+}
+
+func TestHookStartCompactForgetsInjected(t *testing.T) {
+	f := newFixture(t)
+	f.session("s1", "Facturation", "2026-11-10T10:00:00.000Z")
+	if _, err := f.db().Exec("INSERT INTO injected VALUES ('sess', 'point:p1'), ('other', 'point:p1')"); err != nil {
+		t.Fatal(err)
+	}
+	f.run("start", payloadJSON(t, map[string]any{"source": "compact", "cwd": "/nowhere", "session_id": "sess"}))
+	var n int
+	f.db().QueryRow("SELECT count(*) FROM injected WHERE session_id = 'sess'").Scan(&n)
+	var other int
+	f.db().QueryRow("SELECT count(*) FROM injected WHERE session_id = 'other'").Scan(&other)
+	if n != 0 || other != 1 {
+		t.Fatalf("sess %d, other %d", n, other)
 	}
 }

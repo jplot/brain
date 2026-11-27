@@ -208,7 +208,7 @@ func index(q db.Querier, uid string, terms []string, now time.Time) (string, []s
 	}
 	var used []string
 	for i, p := range shown {
-		if add(3+i, "- "+p.Text, 90) {
+		if add(3+i, "- "+day(p.CreatedAt)+" "+p.Text, 90) {
 			used = append(used, p.UID)
 		}
 	}
